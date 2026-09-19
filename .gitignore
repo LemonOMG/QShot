@@ -1,0 +1,33 @@
+# CMake build directories
+build/
+build-*/
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# Qt specifics
+*.moc
+moc_*.cpp
+*.qrc.depends
+*.qrc.o
+qrc_*.cpp
+*.ui
+ui_*.h
+
+# IDE and OS
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.xcodeproj/
+*.xcworkspace/
+.DS_Store
+Thumbs.db

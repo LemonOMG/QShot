@@ -1,0 +1,8 @@
+[  0%] Built target qshot_autogen_timestamp_deps
+[ 11%] Automatic MOC and UIC for target qshot
+[ 11%] Built target qshot_autogen
+[ 22%] Building CXX object CMakeFiles/qshot.dir/qshot_autogen/mocs_compilation.cpp.obj
+mingw32-make.exe[3]: *** [CMakeFiles\qshot.dir\build.make:76: CMakeFiles/qshot.dir/qshot_autogen/mocs_compilation.cpp.obj] Error 1
+mingw32-make.exe[2]: *** [CMakeFiles\Makefile2:85: CMakeFiles/qshot.dir/all] Error 2
+mingw32-make.exe[1]: *** [CMakeFiles\Makefile2:92: CMakeFiles/qshot.dir/rule] Error 2
+mingw32-make.exe: *** [Makefile:123: qshot] Error 2
