@@ -6,17 +6,34 @@
 #include <QClipboard>
 #include <QPainterPath>
 #include <QDebug>
+#include <QDir>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QMessageBox>
+#include <QStandardPaths>
+#include <QtMath>
 
-#ifdef Q_OS_WIN
-#include "platform/windows/WinWindowDetector.h"
-#endif
+#include "core/PlatformFactory.h"
 
 namespace qshot {
 
-SnapOverlay::SnapOverlay(const QPixmap& background, const QRect& virtualGeometry, QWidget* parent)
+namespace {
+// Magnifier / mouse-info panel tuning. Shared by paintEvent() and magnifierLayout()
+// so that the drawn panel and the repainted region can never disagree.
+constexpr int kMagMinSize       = 140; // minimum magnifier edge length, logical px
+constexpr int kMagZoom          = 4;   // magnification factor
+constexpr int kMagPadding       = 8;
+constexpr int kMagLineSpacing   = 4;
+constexpr int kMagColorBlockSize = 12;
+constexpr int kMagFontPixelSize = 12;
+constexpr int kMagCursorGap     = 12;  // gap between cursor and panel
+constexpr int kMagRowCount      = 3;   // RGB / HEX / POS
+} // namespace
+
+SnapOverlay::SnapOverlay(const QPixmap& background, const QRect& screenGeometry, QWidget* parent)
     : QWidget(parent)
-    , backgroundPixmap_(background)
     , backgroundImage_(background.toImage())
+    , dpr_(background.devicePixelRatio())
     , currentMousePos_(-1, -1)
     , isMouseValid_(false)
 {
@@ -24,13 +41,11 @@ SnapOverlay::SnapOverlay(const QPixmap& background, const QRect& virtualGeometry
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool);
     setAttribute(Qt::WA_DeleteOnClose);
     
-    setGeometry(virtualGeometry);
+    setGeometry(screenGeometry);
     setCursor(Qt::CrossCursor);
     setMouseTracking(true); // Required for hover detection
 
-#ifdef Q_OS_WIN
-    detector_ = std::make_unique<WinWindowDetector>();
-#endif
+    detector_ = PlatformFactory::createWindowDetector();
 
     hoverTimer_.setSingleShot(true);
     hoverTimer_.setInterval(30);
@@ -39,18 +54,18 @@ SnapOverlay::SnapOverlay(const QPixmap& background, const QRect& virtualGeometry
         if (!detector_) return;
         QRect newHover = detector_->windowRectAt(lastHoverPos_);
         if (newHover != hoverWindowRect_) {
+            // Only the hover outline and the dimmed "hole" change, so repaint just
+            // the union of the old and new rectangles (expanded for the 2px border).
+            QRect dirty = hoverWindowRect_.united(newHover).adjusted(-2, -2, 2, 2);
             hoverWindowRect_ = newHover;
-            update();
+            update(dirty);
         }
     });
 
     toolbar_ = new ToolbarWidget(this);
     toolbar_->hide();
     connect(toolbar_, &ToolbarWidget::toolSelected, this, &SnapOverlay::handleToolSelection);
-    connect(toolbar_, &ToolbarWidget::undoRequested, this, [this]() {
-        annotationLayer_.undo();
-        update();
-    });
+    connect(toolbar_, &ToolbarWidget::undoRequested, this, &SnapOverlay::handleUndo);
     connect(toolbar_, &ToolbarWidget::cancelRequested, this, [this]() {
         close();
         emit closed();
@@ -59,6 +74,14 @@ SnapOverlay::SnapOverlay(const QPixmap& background, const QRect& virtualGeometry
         copyToClipboard();
         close();
         emit closed();
+    });
+    connect(toolbar_, &ToolbarWidget::saveRequested, this, [this]() {
+        // Keep the overlay alive when saving fails or is cancelled, so the user
+        // does not lose their selection and annotations.
+        if (saveToFile()) {
+            close();
+            emit closed();
+        }
     });
     
     textInput_ = new TextInputWidget(this);
@@ -86,7 +109,10 @@ void SnapOverlay::showToolbar() {
 }
 
 void SnapOverlay::hideToolbar() {
-    if (toolbar_) toolbar_->hide();
+    if (toolbar_) {
+        toolbar_->hide();
+        toolbar_->hideSubPanel();
+    }
 }
 
 void SnapOverlay::handleToolSelection(AnnotationType /*type*/) {
@@ -115,8 +141,12 @@ void SnapOverlay::paintEvent(QPaintEvent* event) {
     
     QPainter painter(this);
     
-    // Draw original background
-    painter.drawPixmap(0, 0, backgroundPixmap_);
+    // Draw original background.
+    // backgroundImage_ already carries dpr_ (QPixmap::toImage() preserves the device
+    // pixel ratio) and drawImage() honours it, so it must be drawn as-is. Copying it
+    // into a local just to call setDevicePixelRatio() would detach and memcpy the
+    // whole screen bitmap on every repaint.
+    painter.drawImage(0, 0, backgroundImage_);
     
     // Determine the active region (the "hole")
     QRect currentSelection = selectionRect_.normalized();
@@ -216,7 +246,7 @@ void SnapOverlay::paintEvent(QPaintEvent* event) {
         }
         
         // 2. Sample pixel color
-        qreal dpr = backgroundPixmap_.devicePixelRatio();
+        qreal dpr = dpr_;
         QPoint scaledPos(qRound(currentMousePos_.x() * dpr), qRound(currentMousePos_.y() * dpr));
         
         QColor pixelColor = Qt::black;
@@ -224,62 +254,33 @@ void SnapOverlay::paintEvent(QPaintEvent* event) {
             pixelColor = backgroundImage_.pixelColor(scaledPos);
         }
         
-        // 3. Prepare dimensions and text
-        const int magSize = 140; 
-        const int padding = 8;
-        const int lineSpacing = 4;
-        const int colorBlockSize = 12;
+        // 3. Prepare text and panel layout
+        const int padding = kMagPadding;
+        const int lineSpacing = kMagLineSpacing;
+        const int colorBlockSize = kMagColorBlockSize;
         
         QString rgbText = QString("RGB: (%1, %2, %3)").arg(pixelColor.red()).arg(pixelColor.green()).arg(pixelColor.blue());
         QString hexText = QString("HEX: %1").arg(pixelColor.name().toUpper());
         QString coordText = QString("POS: %1, %2").arg(relPos.x()).arg(relPos.y());
         
         QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-        font.setPixelSize(12);
+        font.setPixelSize(kMagFontPixelSize);
         QFontMetrics fm(font);
         
-        int w1 = fm.horizontalAdvance(rgbText);
-        int w2 = colorBlockSize + 4 + fm.horizontalAdvance(hexText);
-        int w3 = fm.horizontalAdvance(coordText);
-        int maxTextWidth = qMax(qMax(w1, w2), w3);
+        // Panel geometry is shared with mouseMoveEvent() so that partial repaints
+        // always cover exactly what is drawn here.
+        const MagnifierLayout layout = magnifierLayout(currentMousePos_);
+        const int boxX = layout.panel.x();
+        const int boxY = layout.panel.y();
+        const int boxWidth = layout.panel.width();
+        const int boxHeight = layout.panel.height();
+        const int finalMagSize = layout.magHeight;
+        const int srcPhysicalW = layout.srcPhysicalW;
+        const int srcPhysicalH = layout.srcPhysicalH;
+        const int magPhysicalW = srcPhysicalW * kMagZoom;
+        const int magPhysicalH = srcPhysicalH * kMagZoom;
         
-        int initialBoxWidth = qMax(magSize, maxTextWidth + padding * 2);
-        
-        // To avoid subpixel alignment issues, we crop the physical image, scale it using nearest neighbor,
-        // and force the center physical pixel to be exactly at the crosshair.
-        const int zoom = 4; // 4x zoom
-        int srcPhysicalW = qRound(initialBoxWidth * dpr / zoom);
-        if (srcPhysicalW % 2 == 0) srcPhysicalW++; // Force odd width to have a true center pixel
-        
-        int srcPhysicalH = qRound(magSize * dpr / zoom);
-        if (srcPhysicalH % 2 == 0) srcPhysicalH++; // Force odd height
-        
-        int magPhysicalW = srcPhysicalW * zoom;
-        int magPhysicalH = srcPhysicalH * zoom;
-        
-        qreal magLogicalW = magPhysicalW / dpr;
-        qreal magLogicalH = magPhysicalH / dpr;
-        
-        int boxWidth = qCeil(magLogicalW);
-        int finalMagSize = qCeil(magLogicalH);
-        
-        int textHeight = fm.height() * 3 + lineSpacing * 2;
-        int boxHeight = finalMagSize + padding * 2 + textHeight;
-        
-        // 4. Calculate position with screen boundary constraints
-        int offsetX = 12;
-        int offsetY = 12;
-        int boxX = currentMousePos_.x() + offsetX;
-        int boxY = currentMousePos_.y() + offsetY;
-        
-        if (boxX + boxWidth > rect().right()) {
-            boxX = currentMousePos_.x() - offsetX - boxWidth;
-        }
-        if (boxY + boxHeight > rect().bottom()) {
-            boxY = currentMousePos_.y() - offsetY - boxHeight;
-        }
-        
-        // 5. Draw background with rounded corners and no outer border
+        // 4. Draw background with rounded corners and no outer border
         painter.save();
         painter.setRenderHint(QPainter::Antialiasing, true);
         
@@ -298,7 +299,7 @@ void SnapOverlay::paintEvent(QPaintEvent* event) {
         painter.setBrush(Qt::white);
         painter.drawRect(textBgRect);
         
-        // 6. Draw magnifier
+        // 5. Draw magnifier
         int srcX = scaledPos.x() - srcPhysicalW / 2;
         int srcY = scaledPos.y() - srcPhysicalH / 2;
         QRect physicalSrcRect(srcX, srcY, srcPhysicalW, srcPhysicalH);
@@ -329,7 +330,7 @@ void SnapOverlay::paintEvent(QPaintEvent* event) {
         
         // Remove the border separating magnifier and text to make it cleaner
         
-        // 7. Draw contents (Text area)
+        // 6. Draw contents (Text area)
         painter.setFont(font);
         
         int currentY = boxY + finalMagSize + padding + fm.ascent();
@@ -358,18 +359,70 @@ void SnapOverlay::paintEvent(QPaintEvent* event) {
     }
 }
 
+SnapOverlay::MagnifierLayout SnapOverlay::magnifierLayout(const QPoint& mousePos) const {
+    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    font.setPixelSize(kMagFontPixelSize);
+    const QFontMetrics fm(font);
+
+    // Worst-case text widths: three RGB components and five-digit coordinates.
+    // Using a fixed budget (instead of the currently sampled values) keeps the panel
+    // from resizing as the cursor moves, which is both steadier to look at and what
+    // makes the rect usable as a repaint region.
+    const int rgbWidth  = fm.horizontalAdvance(QStringLiteral("RGB: (255, 255, 255)"));
+    const int hexWidth  = kMagColorBlockSize + 4 + fm.horizontalAdvance(QStringLiteral("HEX: #FFFFFF"));
+    const int posWidth  = fm.horizontalAdvance(QStringLiteral("POS: -99999, -99999"));
+    const int textWidth = qMax(qMax(rgbWidth, hexWidth), posWidth);
+
+    const int initialBoxWidth = qMax(kMagMinSize, textWidth + kMagPadding * 2);
+
+    // To avoid subpixel alignment issues we crop the physical image, scale it with
+    // nearest neighbour, and force the centre physical pixel onto the crosshair.
+    int srcPhysicalW = qRound(initialBoxWidth * dpr_ / kMagZoom);
+    if (srcPhysicalW % 2 == 0) ++srcPhysicalW; // odd width => true centre pixel
+    int srcPhysicalH = qRound(kMagMinSize * dpr_ / kMagZoom);
+    if (srcPhysicalH % 2 == 0) ++srcPhysicalH; // odd height => true centre pixel
+
+    MagnifierLayout layout;
+    layout.srcPhysicalW = srcPhysicalW;
+    layout.srcPhysicalH = srcPhysicalH;
+    layout.magHeight = qCeil(srcPhysicalH * kMagZoom / dpr_);
+    const int boxWidth = qCeil(srcPhysicalW * kMagZoom / dpr_);
+    const int boxHeight = layout.magHeight + kMagPadding * 2
+                        + fm.height() * kMagRowCount + kMagLineSpacing * (kMagRowCount - 1);
+
+    int boxX = mousePos.x() + kMagCursorGap;
+    int boxY = mousePos.y() + kMagCursorGap;
+    if (boxX + boxWidth > rect().right()) {
+        boxX = mousePos.x() - kMagCursorGap - boxWidth;
+    }
+    if (boxY + boxHeight > rect().bottom()) {
+        boxY = mousePos.y() - kMagCursorGap - boxHeight;
+    }
+
+    layout.panel = QRect(boxX, boxY, boxWidth, boxHeight);
+    return layout;
+}
+
 Handle SnapOverlay::hitTestHandle(const QPoint& pos) const {
     if (selectionRect_.isEmpty()) return Handle::None;
+
     const int m = 8;
-    QRect r = selectionRect_;
-    if (QRect(r.topLeft()    - QPoint(m,m), QSize(2*m,2*m)).contains(pos)) return Handle::TopLeft;
-    if (QRect(r.topRight()   - QPoint(m,0), QSize(2*m,2*m)).contains(pos)) return Handle::TopRight;
-    if (QRect(r.bottomLeft() - QPoint(0,m), QSize(2*m,2*m)).contains(pos)) return Handle::BottomLeft;
-    if (QRect(r.bottomRight(),              QSize(2*m,2*m)).contains(pos)) return Handle::BottomRight;
-    if (QRect(QPoint(r.center().x()-m, r.top()-m),    QSize(2*m,2*m)).contains(pos)) return Handle::Top;
-    if (QRect(QPoint(r.center().x()-m, r.bottom()-m), QSize(2*m,2*m)).contains(pos)) return Handle::Bottom;
-    if (QRect(QPoint(r.left()-m,  r.center().y()-m),  QSize(2*m,2*m)).contains(pos)) return Handle::Left;
-    if (QRect(QPoint(r.right()-m, r.center().y()-m),  QSize(2*m,2*m)).contains(pos)) return Handle::Right;
+    const QRect r = selectionRect_;
+
+    // Every handle is a 2m x 2m square centred on its anchor point. Keep it that way
+    // for all eight handles -- off-centre hit areas are invisible but very annoying.
+    const auto hits = [&pos, m](const QPoint& anchor) {
+        return QRect(anchor - QPoint(m, m), QSize(2 * m, 2 * m)).contains(pos);
+    };
+
+    if (hits(r.topLeft()))     return Handle::TopLeft;
+    if (hits(r.topRight()))    return Handle::TopRight;
+    if (hits(r.bottomLeft()))  return Handle::BottomLeft;
+    if (hits(r.bottomRight())) return Handle::BottomRight;
+    if (hits(QPoint(r.center().x(), r.top())))    return Handle::Top;
+    if (hits(QPoint(r.center().x(), r.bottom()))) return Handle::Bottom;
+    if (hits(QPoint(r.left(),  r.center().y())))  return Handle::Left;
+    if (hits(QPoint(r.right(), r.center().y())))  return Handle::Right;
     return Handle::None;
 }
 
@@ -497,6 +550,7 @@ void SnapOverlay::mousePressEvent(QMouseEvent* event) {
 }
 
 void SnapOverlay::mouseMoveEvent(QMouseEvent* event) {
+    QPoint oldMousePos = currentMousePos_;
     currentMousePos_ = event->pos();
     isMouseValid_ = true;
 
@@ -557,7 +611,17 @@ void SnapOverlay::mouseMoveEvent(QMouseEvent* event) {
         lastHoverPos_ = event->globalPosition().toPoint();
         if (!hoverTimer_.isActive()) hoverTimer_.start();
         updateCursorForPos(event->pos());
-        update();
+        
+        // In Idle the only thing that moves with the cursor is the magnifier panel
+        // (the hover outline is repainted by hoverTimer_), so repaint just the union
+        // of the old and new panel rectangles instead of the whole screen.
+        if (oldMousePos.x() >= 0) {
+            QRect dirty = magnifierLayout(oldMousePos).panel
+                              .united(magnifierLayout(currentMousePos_).panel);
+            update(dirty.adjusted(-2, -2, 2, 2));
+        } else {
+            update();
+        }
         return;
     }
     }
@@ -578,19 +642,19 @@ void SnapOverlay::mouseReleaseEvent(QMouseEvent* event) {
         if (state_ == OverlayState::Moving) {
             if ((event->pos() - startPos_).manhattanLength() <= 5) {
                 // Clicked inside existing selection without moving
-                copyToClipboard();
-                close();
-                emit closed();
+                state_ = OverlayState::Selected;
+                annotationLayer_.setBaseImage(backgroundImage_, selectionRect_.normalized(), dpr_);
+                showToolbar();
             } else {
                 state_ = OverlayState::Selected;
-                annotationLayer_.setBaseImage(backgroundImage_, selectionRect_.normalized(), backgroundPixmap_.devicePixelRatio());
+                annotationLayer_.setBaseImage(backgroundImage_, selectionRect_.normalized(), dpr_);
                 showToolbar();
             }
             return;
         }
         if (state_ == OverlayState::Resizing) {
             state_ = OverlayState::Selected;
-            annotationLayer_.setBaseImage(backgroundImage_, selectionRect_.normalized(), backgroundPixmap_.devicePixelRatio());
+            annotationLayer_.setBaseImage(backgroundImage_, selectionRect_.normalized(), dpr_);
             showToolbar();
             return;
         }
@@ -599,7 +663,7 @@ void SnapOverlay::mouseReleaseEvent(QMouseEvent* event) {
                 // Was a drag
                 if (selectionRect_.width() >= 4 && selectionRect_.height() >= 4) {
                     state_ = OverlayState::Selected;
-                    annotationLayer_.setBaseImage(backgroundImage_, selectionRect_.normalized(), backgroundPixmap_.devicePixelRatio());
+                    annotationLayer_.setBaseImage(backgroundImage_, selectionRect_.normalized(), dpr_);
                     showToolbar();
                 } else {
                     selectionRect_ = QRect();
@@ -611,7 +675,7 @@ void SnapOverlay::mouseReleaseEvent(QMouseEvent* event) {
                 if (hoverWindowRect_.isValid()) {
                     selectionRect_ = hoverWindowRect_;
                     state_ = OverlayState::Selected;
-                    annotationLayer_.setBaseImage(backgroundImage_, selectionRect_.normalized(), backgroundPixmap_.devicePixelRatio());
+                    annotationLayer_.setBaseImage(backgroundImage_, selectionRect_.normalized(), dpr_);
                     showToolbar();
                 } else {
                     selectionRect_ = QRect();
@@ -659,21 +723,66 @@ void SnapOverlay::keyPressEvent(QKeyEvent* event) {
     }
 }
 
+QRect SnapOverlay::physicalSelectionRect() const {
+    const QRect currentSelection = selectionRect_.normalized();
+    if (currentSelection.isEmpty()) return QRect();
+
+    QRect physicalRect(
+        qRound(currentSelection.x() * dpr_),
+        qRound(currentSelection.y() * dpr_),
+        qRound(currentSelection.width() * dpr_),
+        qRound(currentSelection.height() * dpr_)
+    );
+    return physicalRect.intersected(backgroundImage_.rect());
+}
+
 void SnapOverlay::copyToClipboard() {
-    QRect currentSelection = selectionRect_.normalized();
-    if (!currentSelection.isEmpty()) {
-        qreal dpr = backgroundPixmap_.devicePixelRatio();
-        QRect physicalRect(
-            qRound(currentSelection.x() * dpr),
-            qRound(currentSelection.y() * dpr),
-            qRound(currentSelection.width() * dpr),
-            qRound(currentSelection.height() * dpr)
-        );
-        physicalRect = physicalRect.intersected(backgroundPixmap_.rect());
-        QPixmap selectedPixmap = backgroundPixmap_.copy(physicalRect);
-        selectedPixmap.setDevicePixelRatio(dpr);
-        QApplication::clipboard()->setPixmap(selectedPixmap);
+    const QRect physicalRect = physicalSelectionRect();
+    if (physicalRect.isEmpty()) return;
+
+    const QImage basePhysical = backgroundImage_.copy(physicalRect);
+    const QImage finalImage = annotationLayer_.renderToImage(basePhysical);
+    QPixmap selectedPixmap = QPixmap::fromImage(finalImage);
+    // fromImage() already carried the device pixel ratio over from finalImage.
+    selectedPixmap.setDevicePixelRatio(dpr_);
+    QApplication::clipboard()->setPixmap(selectedPixmap);
+}
+
+bool SnapOverlay::saveToFile() {
+    const QRect physicalRect = physicalSelectionRect();
+    if (physicalRect.isEmpty()) return false;
+
+    QString defaultPath = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    if (defaultPath.isEmpty()) defaultPath = QDir::homePath();
+    defaultPath += QStringLiteral("/screenshot.png");
+
+    // Parented to this overlay on purpose: the overlay is an always-on-top
+    // fullscreen tool window, so an unowned dialog could end up behind it.
+    QString selectedFilter;
+    QString filePath = QFileDialog::getSaveFileName(
+        this,
+        QStringLiteral("保存截图"),
+        defaultPath,
+        QStringLiteral("PNG 图片 (*.png);;JPEG 图片 (*.jpg)"),
+        &selectedFilter);
+    if (filePath.isEmpty()) return false; // cancelled
+
+    // Non-native dialogs do not append an extension for us.
+    if (QFileInfo(filePath).suffix().isEmpty()) {
+        filePath += selectedFilter.startsWith(QStringLiteral("JPEG"))
+                        ? QStringLiteral(".jpg")
+                        : QStringLiteral(".png");
     }
+
+    const QImage basePhysical = backgroundImage_.copy(physicalRect);
+    const QImage finalImage = annotationLayer_.renderToImage(basePhysical);
+
+    if (!finalImage.save(filePath)) {
+        QMessageBox::warning(this, QStringLiteral("保存失败"),
+                             QStringLiteral("无法写入文件：\n%1").arg(filePath));
+        return false; // keep the overlay so the user does not lose their work
+    }
+    return true;
 }
 
 } // namespace qshot

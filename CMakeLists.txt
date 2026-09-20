@@ -9,6 +9,18 @@ set(CMAKE_AUTOUIC ON)
 
 find_package(Qt6 COMPONENTS Core Gui Widgets REQUIRED)
 
+set(PLATFORM_SOURCES "")
+if (WIN32)
+    list(APPEND PLATFORM_SOURCES
+        src/platform/windows/WinScreenCapture.h
+        src/platform/windows/WinScreenCapture.cpp
+        src/platform/windows/WinGlobalHotkey.h
+        src/platform/windows/WinGlobalHotkey.cpp
+        src/platform/windows/WinWindowDetector.h
+        src/platform/windows/WinWindowDetector.cpp
+    )
+endif()
+
 add_executable(qshot WIN32
     src/main.cpp
     src/app/ShotApplication.h
@@ -16,16 +28,15 @@ add_executable(qshot WIN32
     src/core/IScreenCapture.h
     src/core/IGlobalHotkey.h
     src/core/IWindowDetector.h
-    src/platform/windows/WinScreenCapture.h
-    src/platform/windows/WinScreenCapture.cpp
-    src/platform/windows/WinGlobalHotkey.h
-    src/platform/windows/WinGlobalHotkey.cpp
-    src/platform/windows/WinWindowDetector.h
-    src/platform/windows/WinWindowDetector.cpp
+    src/core/PlatformFactory.h
+    src/core/PlatformFactory.cpp
+    ${PLATFORM_SOURCES}
     src/overlay/SnapOverlay.h
     src/overlay/SnapOverlay.cpp
     src/overlay/ToolbarWidget.h
     src/overlay/ToolbarWidget.cpp
+    src/overlay/TextInputWidget.h
+    src/overlay/TextInputWidget.cpp
     
     src/annotation/AnnotationType.h
     src/annotation/Annotation.h
@@ -33,5 +44,8 @@ add_executable(qshot WIN32
     src/annotation/AnnotationLayer.cpp
 )
 
-target_link_libraries(qshot PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets dwmapi)
+target_link_libraries(qshot PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
+if (WIN32)
+    target_link_libraries(qshot PRIVATE dwmapi)
+endif()
 target_include_directories(qshot PRIVATE src)

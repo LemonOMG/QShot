@@ -30,8 +30,11 @@ bool WinGlobalHotkey::registerHotkey(const QString& key, Qt::KeyboardModifiers m
     if (modifiers & Qt::AltModifier) fsModifiers |= MOD_ALT;
     if (modifiers & Qt::MetaModifier) fsModifiers |= MOD_WIN;
 
+#ifndef MOD_NOREPEAT
+#define MOD_NOREPEAT 0x4000
+#endif
     // The MOD_NOREPEAT flag prevents the hotkey from firing repeatedly if held down.
-    fsModifiers |= 0x4000; // MOD_NOREPEAT
+    fsModifiers |= MOD_NOREPEAT;
 
     // Convert string to Qt::Key
     QKeySequence seq(key);
@@ -40,8 +43,25 @@ bool WinGlobalHotkey::registerHotkey(const QString& key, Qt::KeyboardModifiers m
     // Get the key code
     int qtKey = seq[0].key();
     
-    // For basic A-Z, 0-9, Qt::Key value matches the Windows virtual key code.
-    UINT vk = qtKey;
+    // Convert Qt::Key to Windows Virtual Key
+    UINT vk = 0;
+    if (qtKey >= Qt::Key_A && qtKey <= Qt::Key_Z) {
+        vk = 'A' + (qtKey - Qt::Key_A);
+    } else if (qtKey >= Qt::Key_0 && qtKey <= Qt::Key_9) {
+        vk = '0' + (qtKey - Qt::Key_0);
+    } else if (qtKey >= Qt::Key_F1 && qtKey <= Qt::Key_F24) {
+        vk = VK_F1 + (qtKey - Qt::Key_F1);
+    } else {
+        switch(qtKey) {
+            case Qt::Key_Escape: vk = VK_ESCAPE; break;
+            case Qt::Key_Tab: vk = VK_TAB; break;
+            case Qt::Key_Backspace: vk = VK_BACK; break;
+            case Qt::Key_Return:
+            case Qt::Key_Enter: vk = VK_RETURN; break;
+            case Qt::Key_Space: vk = VK_SPACE; break;
+            default: vk = qtKey; break; // Fallback
+        }
+    }
 
     hotkeyId_ = 1001; // Arbitrary ID
     

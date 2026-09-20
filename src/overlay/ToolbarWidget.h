@@ -29,6 +29,8 @@ public:
     // To position the toolbar relative to the selection rect
     void updatePosition(const QRect& selectionRect, const QRect& screenRect);
 
+    void hideSubPanel(); // Public for SnapOverlay to cascade hide
+
     void handleToolClick(AnnotationType type);
     void handleActionClick(const QString& action);
 
@@ -67,7 +69,7 @@ private:
     SubPanelWidget* subPanel_ = nullptr;
     
     void showSubPanel();
-    void hideSubPanel();
+
 };
 
 } // namespace qshot

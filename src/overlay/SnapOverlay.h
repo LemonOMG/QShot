@@ -31,7 +31,7 @@ enum class Handle {
 class SnapOverlay : public QWidget {
     Q_OBJECT
 public:
-    explicit SnapOverlay(const QPixmap& background, const QRect& virtualGeometry, QWidget* parent = nullptr);
+    explicit SnapOverlay(const QPixmap& background, const QRect& screenGeometry, QWidget* parent = nullptr);
     ~SnapOverlay() override;
 
 signals:
@@ -47,12 +47,27 @@ protected:
     void leaveEvent(QEvent* event) override;
 
 private:
+    // Layout of the floating magnifier / mouse-info panel.
+    // Width is derived from worst-case text widths (RGB triplets, 5-digit coordinates)
+    // so the result is stable while the mouse moves over different pixels. That makes
+    // it safe to use as a superset when computing partial repaint regions.
+    struct MagnifierLayout {
+        QRect panel;              // full panel, logical widget coordinates
+        int magHeight = 0;        // height of the magnifier part (upper section of panel)
+        int srcPhysicalW = 0;     // physical size of the magnified source crop (always odd)
+        int srcPhysicalH = 0;
+    };
+    MagnifierLayout magnifierLayout(const QPoint& mousePos) const;
+
     Handle hitTestHandle(const QPoint& pos) const;
     void updateCursorForPos(const QPoint& pos);
     void copyToClipboard();
+    bool saveToFile();
+    // Current selection mapped to physical pixels of backgroundImage_, clipped to it.
+    QRect physicalSelectionRect() const;
     
-    QPixmap backgroundPixmap_;
     QImage backgroundImage_;
+    qreal dpr_ = 1.0;
     QPoint startPos_;
     QRect startRect_;
     QRect selectionRect_;

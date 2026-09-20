@@ -428,7 +428,7 @@ void ToolbarWidget::handleToolClick(AnnotationType type) {
         hideSubPanel();
     } else {
         currentTool_ = type;
-        if (type == AnnotationType::Rectangle || type == AnnotationType::Pen) {
+        if (currentTool_ != AnnotationType::None) {
             showSubPanel();
         } else {
             hideSubPanel();

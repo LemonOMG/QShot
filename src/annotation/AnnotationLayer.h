@@ -20,6 +20,9 @@ public:
     // Helper to draw a single annotation
     static void paintAnnotation(QPainter& p, const Annotation& a);
 
+    // Render annotations to a physical image copy
+    QImage renderToImage(const QImage& basePhysical) const;
+
     // Mosaic support
     void setBaseImage(const QImage& fullBg, const QRect& selectionRect, qreal dpr);
     void updateMosaic(const Annotation& mosaicAnnotation);

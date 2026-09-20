@@ -5,9 +5,8 @@
 #include <QApplication>
 #include <QPixmap>
 
-#include "platform/windows/WinScreenCapture.h"
+#include "core/PlatformFactory.h"
 #include "overlay/SnapOverlay.h"
-#include "platform/windows/WinGlobalHotkey.h"
 #include "core/IGlobalHotkey.h"
 #include <QScreen>
 
@@ -91,7 +90,7 @@ void ShotApplication::updateTrayStatus(bool registered) {
 
 void ShotApplication::registerGlobalHotkeys() {
     if (!globalHotkey_) {
-        globalHotkey_ = new WinGlobalHotkey(this);
+        globalHotkey_ = PlatformFactory::createGlobalHotkey(this);
         
         // IGlobalHotkey inherits QObject and has hotkeyPressed() signal
         auto hotkeyObj = dynamic_cast<QObject*>(globalHotkey_);
@@ -127,28 +126,37 @@ void ShotApplication::onCaptureTriggered() {
     qDebug() << "Capture triggered!";
     
     // 如果已经有处于激活状态的截图叠加层，再次按下快捷键则退出当前截图（类似于 Toggle 机制）
-    if (currentOverlay_) {
-        qDebug() << "Overlay already active, closing it.";
-        currentOverlay_->close();
+    if (!currentOverlays_.isEmpty()) {
+        qDebug() << "Overlays already active, closing them.";
+        for (auto& overlay : currentOverlays_) {
+            if (overlay) overlay->close();
+        }
+        currentOverlays_.clear();
         return;
     }
     
-    WinScreenCapture capture;
-    QPixmap fullScreen = capture.captureEntireScreen();
+    auto capture = PlatformFactory::createScreenCapture();
     
-    if (fullScreen.isNull()) {
-        qWarning() << "Failed to capture screens.";
-        return;
-    }
-    
-    QRect virtualGeometry;
     for (QScreen* screen : QGuiApplication::screens()) {
-        virtualGeometry = virtualGeometry.united(screen->geometry());
+        QPixmap screenPixmap = capture->captureScreen(screen);
+        if (screenPixmap.isNull()) continue;
+        
+        SnapOverlay* overlay = new SnapOverlay(screenPixmap, screen->geometry());
+        currentOverlays_.append(overlay);
+        
+        connect(overlay, &SnapOverlay::closed, this, [this, overlay]() {
+            // Close all others
+            for (auto& other : currentOverlays_) {
+                if (other && other != overlay) {
+                    other->close();
+                }
+            }
+            currentOverlays_.clear();
+        });
+        
+        overlay->setGeometry(screen->geometry());
+        overlay->show();
     }
-    
-    SnapOverlay* overlay = new SnapOverlay(fullScreen, virtualGeometry);
-    currentOverlay_ = overlay;
-    overlay->show();
 }
 
 void ShotApplication::onSettingsTriggered() {

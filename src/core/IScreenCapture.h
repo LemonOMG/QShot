@@ -2,6 +2,7 @@
 
 #include <QPixmap>
 #include <QRect>
+#include <QScreen>
 
 namespace qshot {
 
@@ -10,10 +11,11 @@ public:
     virtual ~IScreenCapture() = default;
 
     /**
-     * @brief Capture all connected screens into a single large pixmap
-     * @return A pixmap covering the virtual geometry of all screens
+     * @brief Capture a specific screen
+     * @param screen The screen to capture
+     * @return A pixmap of the screen
      */
-    virtual QPixmap captureEntireScreen() = 0;
+    virtual QPixmap captureScreen(QScreen* screen) = 0;
 };
 
 } // namespace qshot

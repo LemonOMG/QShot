@@ -27,11 +27,12 @@ void AnnotationLayer::paint(QPainter& p, const QRect& selectionRect) const {
     p.save();
     p.translate(selectionRect.topLeft());
 
-    // 1. Paint mosaic layer first (it's underneath vector annotations)
+    // 1. Paint mosaic layer first (it's underneath vector annotations).
+    // mosaicLayer_ carries dpr_ from the moment it is allocated, so it can be drawn
+    // directly. Copying it just to call setDevicePixelRatio() would detach and copy
+    // the whole layer on every repaint.
     if (!mosaicLayer_.isNull()) {
-        QImage scaledMosaic = mosaicLayer_;
-        scaledMosaic.setDevicePixelRatio(dpr_);
-        p.drawImage(0, 0, scaledMosaic);
+        p.drawImage(0, 0, mosaicLayer_);
     }
 
     p.setRenderHint(QPainter::Antialiasing, true);
@@ -131,6 +132,29 @@ void AnnotationLayer::paintAnnotation(QPainter& p, const Annotation& a) {
     }
 }
 
+QImage AnnotationLayer::renderToImage(const QImage& basePhysical) const {
+    if (basePhysical.isNull()) return basePhysical;
+    
+    QImage result = basePhysical;
+    result.setDevicePixelRatio(dpr_);
+    
+    QPainter p(&result);
+    // Draw mosaic layer if available (already carries dpr_).
+    if (!mosaicLayer_.isNull()) {
+        p.drawImage(0, 0, mosaicLayer_);
+    }
+    
+    p.setRenderHint(QPainter::Antialiasing, true);
+    for (const auto& a : annotations_) {
+        if (a.type != AnnotationType::Mosaic) {
+            paintAnnotation(p, a);
+        }
+    }
+    p.end();
+    
+    return result;
+}
+
 void AnnotationLayer::setBaseImage(const QImage& fullBg, const QRect& selectionRect, qreal dpr) {
     dpr_ = dpr;
     selectionRect_ = selectionRect;
@@ -148,13 +172,8 @@ void AnnotationLayer::setBaseImage(const QImage& fullBg, const QRect& selectionR
         baseImage_.setDevicePixelRatio(1.0); 
     }
     
-    mosaicLayer_ = QImage(baseImage_.size(), QImage::Format_ARGB32);
-    mosaicLayer_.fill(Qt::transparent);
-    mosaicLayer_.setDevicePixelRatio(1.0);
-    
-    mosaicMask_ = QImage(baseImage_.size(), QImage::Format_Grayscale8);
-    mosaicMask_.fill(0);
-    mosaicMask_.setDevicePixelRatio(1.0);
+    mosaicLayer_ = QImage();
+    mosaicMask_ = QImage();
     
     rebuildMosaicCache();
 }
@@ -172,6 +191,20 @@ void AnnotationLayer::rebuildMosaicCache() {
 void AnnotationLayer::updateMosaic(const Annotation& a) {
     if (a.type != AnnotationType::Mosaic || a.points.isEmpty() || baseImage_.isNull()) return;
 
+    if (mosaicLayer_.isNull()) {
+        // Allocated lazily and tagged with dpr_ once, so paint()/renderToImage() can
+        // blit it without a detaching copy on every frame. Pixel access below goes
+        // through scanLine() and is therefore unaffected by the device pixel ratio.
+        mosaicLayer_ = QImage(baseImage_.size(), QImage::Format_ARGB32);
+        mosaicLayer_.fill(Qt::transparent);
+        mosaicLayer_.setDevicePixelRatio(dpr_);
+        
+        // Byte mask only, never drawn -- stays at 1:1 with the physical pixels.
+        mosaicMask_ = QImage(baseImage_.size(), QImage::Format_Grayscale8);
+        mosaicMask_.fill(0);
+        mosaicMask_.setDevicePixelRatio(1.0);
+    }
+
     int mSizePhysical = qRound(a.mosaicSize * dpr_);
     if (mSizePhysical < 1) mSizePhysical = 1;
     
@@ -181,12 +214,30 @@ void AnnotationLayer::updateMosaic(const Annotation& a) {
         path.lineTo(a.points[i]);
     }
     
-    QImage strokeMask(baseImage_.size(), QImage::Format_Grayscale8);
+    QRect logicalBounding = path.boundingRect().toAlignedRect();
+    logicalBounding.adjust(-a.mosaicSize, -a.mosaicSize, a.mosaicSize, a.mosaicSize);
+    
+    QRect physicalBounding(
+        qRound(logicalBounding.x() * dpr_),
+        qRound(logicalBounding.y() * dpr_),
+        qRound(logicalBounding.width() * dpr_),
+        qRound(logicalBounding.height() * dpr_)
+    );
+    physicalBounding = physicalBounding.intersected(baseImage_.rect());
+    if (physicalBounding.isEmpty()) return;
+
+    int startY = (physicalBounding.top() / mSizePhysical) * mSizePhysical;
+    int startX = (physicalBounding.left() / mSizePhysical) * mSizePhysical;
+    int endY = qMin(baseImage_.height(), physicalBounding.bottom() + mSizePhysical);
+    int endX = qMin(baseImage_.width(), physicalBounding.right() + mSizePhysical);
+
+    QImage strokeMask(physicalBounding.size(), QImage::Format_Grayscale8);
     strokeMask.fill(0);
     strokeMask.setDevicePixelRatio(dpr_); 
     
     QPainter p(&strokeMask);
     p.setRenderHint(QPainter::Antialiasing, false);
+    p.translate(-logicalBounding.topLeft());
     QPen pen(Qt::white, a.mosaicSize, Qt::SolidLine, Qt::SquareCap, Qt::RoundJoin);
     p.setPen(pen);
     p.drawPath(path);
@@ -195,16 +246,22 @@ void AnnotationLayer::updateMosaic(const Annotation& a) {
     }
     p.end();
     
-    for (int y = 0; y < baseImage_.height(); y += mSizePhysical) {
-        for (int x = 0; x < baseImage_.width(); x += mSizePhysical) {
+    int strokeOffsetX = physicalBounding.x();
+    int strokeOffsetY = physicalBounding.y();
+
+    for (int y = startY; y < endY; y += mSizePhysical) {
+        for (int x = startX; x < endX; x += mSizePhysical) {
             int bw = qMin(mSizePhysical, baseImage_.width() - x);
             int bh = qMin(mSizePhysical, baseImage_.height() - y);
             
             bool needsMosaic = false;
             for (int by = 0; by < bh && !needsMosaic; ++by) {
-                const uchar* maskRow = strokeMask.scanLine(y + by);
+                int py = y + by - strokeOffsetY;
+                if (py < 0 || py >= strokeMask.height()) continue;
+                const uchar* maskRow = strokeMask.scanLine(py);
                 for (int bx = 0; bx < bw; ++bx) {
-                    if (maskRow[x + bx] > 0) {
+                    int px = x + bx - strokeOffsetX;
+                    if (px >= 0 && px < strokeMask.width() && maskRow[px] > 0) {
                         needsMosaic = true;
                         break;
                     }

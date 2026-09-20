@@ -49,8 +49,39 @@ static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
 }
 
 QRect WinWindowDetector::windowRectAt(const QPoint& logicalPos) const {
+    QScreen* targetScreen = QGuiApplication::screenAt(logicalPos);
+    if (!targetScreen) targetScreen = QGuiApplication::primaryScreen();
+    
+    struct EnumData {
+        QString name;
+        MONITORINFOEXW mi;
+        bool found;
+    } edata;
+    edata.name = targetScreen->name();
+    edata.found = false;
+    edata.mi.cbSize = sizeof(MONITORINFOEXW);
+    
+    EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR hMon, HDC, LPRECT, LPARAM lParam) -> BOOL {
+        EnumData* d = reinterpret_cast<EnumData*>(lParam);
+        MONITORINFOEXW mi = { sizeof(MONITORINFOEXW) };
+        if (GetMonitorInfoW(hMon, (LPMONITORINFO)&mi)) {
+            if (QString::fromWCharArray(mi.szDevice) == d->name) {
+                d->mi = mi;
+                d->found = true;
+                return FALSE;
+            }
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&edata));
+    
     POINT pt;
-    if (!GetCursorPos(&pt)) return QRect();
+    if (edata.found) {
+        qreal dpr = targetScreen->devicePixelRatio();
+        pt.x = edata.mi.rcMonitor.left + qRound((logicalPos.x() - targetScreen->geometry().x()) * dpr);
+        pt.y = edata.mi.rcMonitor.top + qRound((logicalPos.y() - targetScreen->geometry().y()) * dpr);
+    } else {
+        GetCursorPos(&pt); // fallback
+    }
 
     WindowSearchData data;
     data.pt = pt;
@@ -73,7 +104,7 @@ QRect WinWindowDetector::windowRectAt(const QPoint& logicalPos) const {
         return QRect();
     }
 
-    QScreen* targetScreen = nullptr;
+    targetScreen = nullptr;
     QString monName = QString::fromWCharArray(mi.szDevice);
     for (QScreen* screen : QGuiApplication::screens()) {
         if (screen->name() == monName) {

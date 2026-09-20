@@ -4,6 +4,7 @@
 #include <QSystemTrayIcon>
 #include <QMenu>
 #include "core/IGlobalHotkey.h"
+#include <QList>
 #include <QPointer>
 
 namespace qshot {
@@ -35,7 +36,7 @@ private:
     QTimer* hotkeyRetryTimer_;
     
     IGlobalHotkey* globalHotkey_;
-    QPointer<SnapOverlay> currentOverlay_;
+    QList<QPointer<SnapOverlay>> currentOverlays_;
 };
 
 } // namespace qshot
