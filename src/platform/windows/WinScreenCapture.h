@@ -6,7 +6,7 @@ namespace qshot {
 
 class WinScreenCapture : public IScreenCapture {
 public:
-    QPixmap captureScreen(QScreen* screen) override;
+    QPixmap captureScreen(QScreen* screen, bool includeCursor) override;
 };
 
 } // namespace qshot

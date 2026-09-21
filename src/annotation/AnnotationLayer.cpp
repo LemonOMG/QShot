@@ -170,6 +170,11 @@ void AnnotationLayer::setBaseImage(const QImage& fullBg, const QRect& selectionR
     if (!physicalRect.isEmpty()) {
         baseImage_ = fullBg.copy(physicalRect);
         baseImage_.setDevicePixelRatio(1.0); 
+    } else {
+        // Keep baseImage_ consistent with the current selection: leaving the
+        // previous crop in place would make a later updateMosaic() sample the
+        // wrong pixels.
+        baseImage_ = QImage();
     }
     
     mosaicLayer_ = QImage();

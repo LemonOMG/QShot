@@ -4,6 +4,7 @@
 #include "../platform/windows/WinScreenCapture.h"
 #include "../platform/windows/WinGlobalHotkey.h"
 #include "../platform/windows/WinWindowDetector.h"
+#include "../platform/windows/WinAutoStart.h"
 #endif
 
 namespace qshot {
@@ -27,6 +28,14 @@ IGlobalHotkey* PlatformFactory::createGlobalHotkey(QObject* parent) {
 std::unique_ptr<IWindowDetector> PlatformFactory::createWindowDetector() {
 #ifdef Q_OS_WIN
     return std::make_unique<WinWindowDetector>();
+#else
+    return nullptr;
+#endif
+}
+
+std::unique_ptr<IAutoStart> PlatformFactory::createAutoStart() {
+#ifdef Q_OS_WIN
+    return std::make_unique<WinAutoStart>();
 #else
     return nullptr;
 #endif

@@ -59,6 +59,12 @@ private:
     };
     MagnifierLayout magnifierLayout(const QPoint& mousePos) const;
 
+    // With the text tool armed the only way to start typing is to click inside the
+    // selection, which is not obvious. A small badge follows the cursor to say so.
+    bool textToolArmed() const;
+    bool shouldShowTextHint() const;
+    QRect textHintRect(const QPoint& mousePos) const;
+
     Handle hitTestHandle(const QPoint& pos) const;
     void updateCursorForPos(const QPoint& pos);
     void copyToClipboard();
@@ -91,6 +97,12 @@ private:
     
     void showToolbar();
     void hideToolbar();
+    // The toolbar, the colour/size panel and the text editor are all separate
+    // top-level windows. Showing or hiding one of them leaves the process with no
+    // focus window at all (measured: QGuiApplication::focusWindow() becomes null),
+    // which silently kills Esc / Enter / Ctrl+Z. Call this after every such
+    // show/hide to hand the keyboard back to the overlay.
+    void reclaimKeyboardFocus();
     void handleToolSelection(AnnotationType type);
     void finishAnnotation();
     void handleUndo();

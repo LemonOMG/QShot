@@ -12,6 +12,9 @@ public:
     ~TextInputWidget() override;
 
     void startInput(const QPoint& pos, const QColor& color, int fontSize);
+    // Discard any in-progress input and hide the editor (used when the overlay
+    // resets, so a half-finished text box cannot linger on an empty canvas).
+    void cancelInput();
 
 signals:
     void editingFinished(const QString& text);
@@ -26,6 +29,8 @@ private:
     void finish();
     void cancel();
     void adjustSizeToContents();
+    // Width needed for the placeholder hint, so it is never clipped.
+    int minimumEditorWidth() const;
     
     bool finished_ = false;
 };

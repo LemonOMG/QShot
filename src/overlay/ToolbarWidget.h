@@ -4,15 +4,9 @@
 #include <QColor>
 #include <QMap>
 #include "../annotation/AnnotationType.h"
+#include "../annotation/ToolSettings.h"
 
 namespace qshot {
-
-struct ToolSettings {
-    QColor color = QColor(251, 140, 0); // Orange default #FB8C00
-    int lineWidth = 4; // Medium default
-    int mosaicSize = 16;
-    int fontSize = 18;
-};
 
 class ToolbarWidget : public QWidget {
     Q_OBJECT
@@ -49,9 +43,14 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
+    void leaveEvent(QEvent* event) override;
 
 private:
-    void drawButton(QPainter& p, const QRect& rect, AnnotationType toolType, bool isAction, const QString& iconName, bool isHovered, bool isSelected, bool isDisabled = false);
+    // iconName selects the drawn geometry; label is the text for action buttons
+    // (already translated by the caller), empty for the icon-only tool buttons.
+    void drawButton(QPainter& p, const QRect& rect, AnnotationType toolType,
+                    const QString& iconName, const QString& label,
+                    bool isHovered, bool isSelected, bool isDisabled = false);
     AnnotationType currentTool_ = AnnotationType::None; // Default to None
     QMap<AnnotationType, ToolSettings> toolSettings_;
     

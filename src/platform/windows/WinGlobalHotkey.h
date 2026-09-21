@@ -11,7 +11,7 @@ public:
     explicit WinGlobalHotkey(QObject* parent = nullptr);
     ~WinGlobalHotkey() override;
 
-    bool registerHotkey(const QString& key, Qt::KeyboardModifiers modifiers) override;
+    bool registerHotkey(const QKeySequence& sequence) override;
     void unregisterHotkey() override;
 
 protected:

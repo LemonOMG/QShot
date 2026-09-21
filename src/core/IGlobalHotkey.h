@@ -14,12 +14,16 @@ public:
 
     /**
      * @brief Register a system-wide hotkey.
-     * @param key E.g. "A"
-     * @param modifiers E.g. Qt::AltModifier
-     * @return true if successful, false if occupied or failed
+     *
+     * Takes a QKeySequence rather than a key name plus modifiers: the settings
+     * dialog produces a QKeySequence, and converting it to a string only to parse
+     * it back is a lossy round trip through Qt's key-name grammar.
+     *
+     * @param sequence Key plus modifiers, e.g. Alt+A. Only the first chord is used.
+     * @return true if successful, false if occupied, unmappable or otherwise failed
      */
-    virtual bool registerHotkey(const QString& key, Qt::KeyboardModifiers modifiers) = 0;
-    
+    virtual bool registerHotkey(const QKeySequence& sequence) = 0;
+
     virtual void unregisterHotkey() = 0;
 
 signals:

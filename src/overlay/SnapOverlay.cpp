@@ -5,7 +5,6 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QPainterPath>
-#include <QDebug>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -14,6 +13,8 @@
 #include <QtMath>
 
 #include "core/PlatformFactory.h"
+#include "core/Settings.h"
+#include "core/Strings.h"
 
 namespace qshot {
 
@@ -28,6 +29,16 @@ constexpr int kMagColorBlockSize = 12;
 constexpr int kMagFontPixelSize = 12;
 constexpr int kMagCursorGap     = 12;  // gap between cursor and panel
 constexpr int kMagRowCount      = 3;   // RGB / HEX / POS
+
+// "click to type" badge shown next to the cursor while the text tool is armed
+constexpr int kHintFontPixelSize = 12;
+constexpr int kHintPadding       = 6;
+
+QString textHintString() {
+    // Deliberately *not* cached in a function-local static: that would freeze the
+    // language at whatever was selected the first time this ran.
+    return text(Str::TextHintClickToType);
+}
 } // namespace
 
 SnapOverlay::SnapOverlay(const QPixmap& background, const QRect& screenGeometry, QWidget* parent)
@@ -87,17 +98,29 @@ SnapOverlay::SnapOverlay(const QPixmap& background, const QRect& screenGeometry,
     textInput_ = new TextInputWidget(this);
     textInput_->hide();
     connect(textInput_, &TextInputWidget::editingFinished, this, [this](const QString& text) {
-        if (text.isEmpty()) return;
-        Annotation a;
-        a.type = AnnotationType::Text;
-        a.color = toolbar_->currentSettings().color;
-        a.fontSize = toolbar_->currentSettings().fontSize;
-        a.points.append(textInput_->pos() - selectionRect_.normalized().topLeft());
-        a.text = text;
-        annotationLayer_.add(a);
-        toolbar_->setUndoEnabled(true);
-        update();
+        if (!text.isEmpty()) {
+            Annotation a;
+            a.type = AnnotationType::Text;
+            a.color = toolbar_->currentSettings().color;
+            a.fontSize = toolbar_->currentSettings().fontSize;
+            a.points.append(textInput_->pos() - selectionRect_.normalized().topLeft());
+            a.text = text;
+            annotationLayer_.add(a);
+            toolbar_->setUndoEnabled(true);
+            update();
+        }
+        // The editor window just hid itself; without this the overlay would be
+        // left with no keyboard focus.
+        reclaimKeyboardFocus();
     });
+    connect(textInput_, &TextInputWidget::canceled, this, [this]() {
+        reclaimKeyboardFocus();
+    });
+
+    // Clicking the toolbar or the colour/size panel must not cost the overlay its
+    // keyboard focus either.
+    connect(toolbar_, &ToolbarWidget::colorChanged, this, [this]() { reclaimKeyboardFocus(); });
+    connect(toolbar_, &ToolbarWidget::sizeSettingChanged, this, [this]() { reclaimKeyboardFocus(); });
 }
 
 SnapOverlay::~SnapOverlay() = default;
@@ -106,6 +129,7 @@ void SnapOverlay::showToolbar() {
     if (selectionRect_.isEmpty()) return;
     toolbar_->updatePosition(selectionRect_.normalized(), rect());
     toolbar_->show();
+    reclaimKeyboardFocus();
 }
 
 void SnapOverlay::hideToolbar() {
@@ -113,11 +137,20 @@ void SnapOverlay::hideToolbar() {
         toolbar_->hide();
         toolbar_->hideSubPanel();
     }
+    reclaimKeyboardFocus();
+}
+
+void SnapOverlay::reclaimKeyboardFocus() {
+    // No raise() on purpose: the toolbar / panel are owned by this window, so the
+    // window manager keeps them above it anyway (verified by inspecting the Win32
+    // z-order after activateWindow()).
+    activateWindow();
 }
 
 void SnapOverlay::handleToolSelection(AnnotationType /*type*/) {
     updateCursorForPos(currentMousePos_);
     update();
+    reclaimKeyboardFocus();
 }
 
 void SnapOverlay::handleUndo() {
@@ -239,7 +272,7 @@ void SnapOverlay::paintEvent(QPaintEvent* event) {
         // 1. Calculate relative coordinates
         QPoint relPos = currentMousePos_;
         if (state == OverlayState::Dragging) {
-            QRect currentSelection = selectionRect_.normalized();
+            // Reuse the selection computed at the top of paintEvent().
             if (!currentSelection.isEmpty()) {
                 relPos = currentMousePos_ - currentSelection.topLeft();
             }
@@ -357,6 +390,26 @@ void SnapOverlay::paintEvent(QPaintEvent* event) {
         
         painter.restore();
     }
+
+    // "Click to type" badge: with the text tool armed, clicking inside the selection
+    // is the only way to start typing, and that is not discoverable on its own.
+    if (shouldShowTextHint()) {
+        const QRect hint = textHintRect(currentMousePos_);
+
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        QPainterPath hintPath;
+        hintPath.addRoundedRect(hint, 4, 4);
+        painter.fillPath(hintPath, QColor(26, 173, 25, 235));
+
+        QFont hintFont = painter.font();
+        hintFont.setPixelSize(kHintFontPixelSize);
+        painter.setFont(hintFont);
+        painter.setPen(Qt::white);
+        painter.drawText(hint, Qt::AlignCenter, textHintString());
+        painter.restore();
+    }
 }
 
 SnapOverlay::MagnifierLayout SnapOverlay::magnifierLayout(const QPoint& mousePos) const {
@@ -403,6 +456,38 @@ SnapOverlay::MagnifierLayout SnapOverlay::magnifierLayout(const QPoint& mousePos
     return layout;
 }
 
+bool SnapOverlay::textToolArmed() const {
+    return toolbar_
+        && toolbar_->currentTool() == AnnotationType::Text
+        && (!textInput_ || !textInput_->isVisible());
+}
+
+bool SnapOverlay::shouldShowTextHint() const {
+    return textToolArmed()
+        && state_ == OverlayState::Selected
+        && isMouseValid_
+        && selectionRect_.contains(currentMousePos_);
+}
+
+QRect SnapOverlay::textHintRect(const QPoint& mousePos) const {
+    QFont font = QApplication::font();
+    font.setPixelSize(kHintFontPixelSize);
+    const QFontMetrics fm(font);
+    const int w = fm.horizontalAdvance(textHintString()) + kHintPadding * 2;
+    const int h = fm.height() + kHintPadding;
+
+    // Same flip logic as the magnifier panel, so the badge never leaves the screen.
+    int x = mousePos.x() + kMagCursorGap;
+    int y = mousePos.y() + kMagCursorGap;
+    if (x + w > rect().right()) {
+        x = mousePos.x() - kMagCursorGap - w;
+    }
+    if (y + h > rect().bottom()) {
+        y = mousePos.y() - kMagCursorGap - h;
+    }
+    return QRect(x, y, w, h);
+}
+
 Handle SnapOverlay::hitTestHandle(const QPoint& pos) const {
     if (selectionRect_.isEmpty()) return Handle::None;
 
@@ -441,7 +526,10 @@ void SnapOverlay::updateCursorForPos(const QPoint& pos) {
             default: break;
         }
         if (selectionRect_.contains(pos)) {
-            if (toolbar_ && toolbar_->currentTool() != AnnotationType::None) {
+            if (toolbar_ && toolbar_->currentTool() == AnnotationType::Text) {
+                // A caret cursor is the standard hint that a click here starts typing.
+                setCursor(Qt::IBeamCursor);
+            } else if (toolbar_ && toolbar_->currentTool() != AnnotationType::None) {
                 setCursor(Qt::CrossCursor);
             } else {
                 setCursor(Qt::SizeAllCursor);
@@ -461,9 +549,6 @@ void SnapOverlay::updateCursorForPos(const QPoint& pos) {
 }
 
 void SnapOverlay::mousePressEvent(QMouseEvent* event) {
-    qDebug() << "PRESS state:" << int(state_) << "pos:" << event->pos()
-             << "sel:" << selectionRect_ << "hover:" << hoverWindowRect_;
-
     if (event->button() == Qt::LeftButton) {
         if (state_ == OverlayState::Selected) {
             bool isLocked = !annotationLayer_.isEmpty() || (textInput_ && textInput_->isVisible());
@@ -523,6 +608,13 @@ void SnapOverlay::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::RightButton) {
         if (state_ == OverlayState::Annotating) {
             // Cancel current annotation
+            if (activeAnnotation_.type == AnnotationType::Mosaic) {
+                // updateMosaic() writes blocks into the layer while the stroke is
+                // being dragged, so cancelling has to rebuild it -- otherwise the
+                // "cancelled" mosaic stays on screen and, worse, gets baked into
+                // the copied/saved image by renderToImage().
+                annotationLayer_.rebuildMosaicCache();
+            }
             state_ = OverlayState::Selected;
             activeAnnotation_.points.clear();
             updateCursorForPos(event->pos());
@@ -538,6 +630,11 @@ void SnapOverlay::mousePressEvent(QMouseEvent* event) {
         hoverWindowRect_ = QRect();
         annotationLayer_.clear();
         state_ = OverlayState::Idle;
+        // Drop any half-finished text, otherwise the editor would stay on screen
+        // over an empty canvas (and keep stealing keystrokes).
+        if (textInput_ && textInput_->isVisible()) {
+            textInput_->cancelInput();
+        }
         hideToolbar();
         if (toolbar_) {
             // Reset tool selection to None
@@ -605,6 +702,16 @@ void SnapOverlay::mouseMoveEvent(QMouseEvent* event) {
     }
     case OverlayState::Selected: {
         updateCursorForPos(event->pos());
+        // The "click to type" badge follows the cursor, so repaint the union of its
+        // old and new positions instead of the whole screen.
+        if (textToolArmed()) {
+            if (oldMousePos.x() < 0) {
+                update();
+            } else {
+                update(textHintRect(oldMousePos).united(textHintRect(currentMousePos_))
+                           .adjusted(-2, -2, 2, 2));
+            }
+        }
         return;
     }
     case OverlayState::Idle: {
@@ -640,16 +747,12 @@ void SnapOverlay::mouseReleaseEvent(QMouseEvent* event) {
             return;
         }
         if (state_ == OverlayState::Moving) {
-            if ((event->pos() - startPos_).manhattanLength() <= 5) {
-                // Clicked inside existing selection without moving
-                state_ = OverlayState::Selected;
-                annotationLayer_.setBaseImage(backgroundImage_, selectionRect_.normalized(), dpr_);
-                showToolbar();
-            } else {
-                state_ = OverlayState::Selected;
-                annotationLayer_.setBaseImage(backgroundImage_, selectionRect_.normalized(), dpr_);
-                showToolbar();
-            }
+            // Whether the selection was actually moved or the user merely clicked
+            // inside it, the outcome is identical: keep the selection, re-crop the
+            // base image and show the toolbar.
+            state_ = OverlayState::Selected;
+            annotationLayer_.setBaseImage(backgroundImage_, selectionRect_.normalized(), dpr_);
+            showToolbar();
             return;
         }
         if (state_ == OverlayState::Resizing) {
@@ -742,9 +845,9 @@ void SnapOverlay::copyToClipboard() {
 
     const QImage basePhysical = backgroundImage_.copy(physicalRect);
     const QImage finalImage = annotationLayer_.renderToImage(basePhysical);
+    // QPixmap::fromImage() carries the device pixel ratio over from finalImage
+    // (verified with a probe), so an extra setDevicePixelRatio() is not needed.
     QPixmap selectedPixmap = QPixmap::fromImage(finalImage);
-    // fromImage() already carried the device pixel ratio over from finalImage.
-    selectedPixmap.setDevicePixelRatio(dpr_);
     QApplication::clipboard()->setPixmap(selectedPixmap);
 }
 
@@ -752,34 +855,57 @@ bool SnapOverlay::saveToFile() {
     const QRect physicalRect = physicalSelectionRect();
     if (physicalRect.isEmpty()) return false;
 
-    QString defaultPath = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    const Settings& settings = Settings::instance();
+    const bool preferJpeg = settings.saveFormat() == SaveFormat::Jpeg;
+    const QString pngFilter = text(Str::SaveFilterPng);
+    const QString jpegFilter = text(Str::SaveFilterJpeg);
+
+    QString defaultPath = settings.saveDirectory();
+    if (defaultPath.isEmpty()) {
+        defaultPath = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    }
     if (defaultPath.isEmpty()) defaultPath = QDir::homePath();
-    defaultPath += QStringLiteral("/screenshot.png");
+    defaultPath += preferJpeg ? QStringLiteral("/screenshot.jpg")
+                              : QStringLiteral("/screenshot.png");
+
+    // The configured format is listed first so the dialog preselects it.
+    const QString filters = preferJpeg ? (jpegFilter + QStringLiteral(";;") + pngFilter)
+                                       : (pngFilter + QStringLiteral(";;") + jpegFilter);
 
     // Parented to this overlay on purpose: the overlay is an always-on-top
     // fullscreen tool window, so an unowned dialog could end up behind it.
     QString selectedFilter;
     QString filePath = QFileDialog::getSaveFileName(
         this,
-        QStringLiteral("保存截图"),
+        text(Str::SaveDialogTitle),
         defaultPath,
-        QStringLiteral("PNG 图片 (*.png);;JPEG 图片 (*.jpg)"),
+        filters,
         &selectedFilter);
     if (filePath.isEmpty()) return false; // cancelled
 
     // Non-native dialogs do not append an extension for us.
     if (QFileInfo(filePath).suffix().isEmpty()) {
-        filePath += selectedFilter.startsWith(QStringLiteral("JPEG"))
-                        ? QStringLiteral(".jpg")
-                        : QStringLiteral(".png");
+        // Honour the filter the user actually picked; the configured format is
+        // only the preselected default.
+        bool asJpeg = preferJpeg;
+        if (selectedFilter == pngFilter)  asJpeg = false;
+        if (selectedFilter == jpegFilter) asJpeg = true;
+        filePath += asJpeg ? QStringLiteral(".jpg") : QStringLiteral(".png");
     }
 
     const QImage basePhysical = backgroundImage_.copy(physicalRect);
     const QImage finalImage = annotationLayer_.renderToImage(basePhysical);
 
-    if (!finalImage.save(filePath)) {
-        QMessageBox::warning(this, QStringLiteral("保存失败"),
-                             QStringLiteral("无法写入文件：\n%1").arg(filePath));
+    // Derive the encoder from the final extension, not from the setting: the user
+    // may have typed a different one in the dialog.
+    const bool saveAsJpeg = filePath.endsWith(QStringLiteral(".jpg"), Qt::CaseInsensitive)
+                            || filePath.endsWith(QStringLiteral(".jpeg"), Qt::CaseInsensitive);
+
+    if (!finalImage.save(filePath,
+                         saveAsJpeg ? "JPEG" : "PNG",
+                         saveAsJpeg ? settings.jpegQuality() : -1)) {
+        QMessageBox::warning(this, text(Str::SaveFailedTitle),
+                             text(Str::SaveFailedBody).arg(filePath));
         return false; // keep the overlay so the user does not lose their work
     }
     return true;

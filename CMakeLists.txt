@@ -18,6 +18,8 @@ if (WIN32)
         src/platform/windows/WinGlobalHotkey.cpp
         src/platform/windows/WinWindowDetector.h
         src/platform/windows/WinWindowDetector.cpp
+        src/platform/windows/WinAutoStart.h
+        src/platform/windows/WinAutoStart.cpp
     )
 endif()
 
@@ -28,9 +30,16 @@ add_executable(qshot WIN32
     src/core/IScreenCapture.h
     src/core/IGlobalHotkey.h
     src/core/IWindowDetector.h
+    src/core/IAutoStart.h
+    src/core/Settings.h
+    src/core/Settings.cpp
+    src/core/Strings.h
+    src/core/Strings.cpp
     src/core/PlatformFactory.h
     src/core/PlatformFactory.cpp
     ${PLATFORM_SOURCES}
+    src/ui/SettingsDialog.h
+    src/ui/SettingsDialog.cpp
     src/overlay/SnapOverlay.h
     src/overlay/SnapOverlay.cpp
     src/overlay/ToolbarWidget.h
@@ -39,6 +48,7 @@ add_executable(qshot WIN32
     src/overlay/TextInputWidget.cpp
     
     src/annotation/AnnotationType.h
+    src/annotation/ToolSettings.h
     src/annotation/Annotation.h
     src/annotation/AnnotationLayer.h
     src/annotation/AnnotationLayer.cpp
