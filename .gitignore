@@ -18,6 +18,17 @@ qrc_*.cpp
 *.ui
 ui_*.h
 
+# Local tooling caches
+.cache/
+
+# Qt Creator template leftovers (real entry point is src/main.cpp)
+/main.cpp
+/Main.qml
+/importedcontent/
+/*_output.txt
+/err.txt
+/out.txt
+
 # IDE and OS
 .vs/
 .idea/
