@@ -684,8 +684,27 @@ Phase 0.2 拆 SnapOverlay ──┐  ✅ M0
 
 ## 七、验收手段（受环境限制，必须按此执行）
 
-**能确定性验证的**：
-- 编译 + `-Wall -Wextra -Wshadow -Wunused` 零警告。**注意：静态检查必须扫全树 `src/*.cpp`，不能只扫改过的文件** —— M1 就是这么发现 `WinWindowDetector.cpp` 里 8 个「先前就存在、单文件检查从未覆盖」的告警的。秒级命令（不跑 AUTOMOC）：
+### 7.1 审查问题的状态：唯一权威在 `REVIEW_STATUS.md`
+
+**每轮开工前先跑 `python tools/verify_review_status.py`，再决定做什么。**
+
+三份审查报告是**快照**（记录当时发现了什么、当时修了什么），**不是待办清单**。
+「某一项现在修没修」只在 `docs/REVIEW_STATUS.md` 里有答案。这条规则是被连续三次
+同类失误逼出来的 —— P1-3/P1-6/P1-8、P2-2/P2-3、R3-9 六项都在别的轮次里顺手修掉了，
+而报告一直挂着「未处理」。状态曾散落在三份报告的八个小节里，每节在写下的那天都是对的，
+合起来就是错的；代价是双向的，既会重复劳动，也会以为活干完了而实际没干。
+
+校验器强制：编号双向一致（报告里的 `### 编号` 必须在索引登记，索引里的编号必须在报告里出现）、
+状态词取自闭集、「已修」行的落点文件真实存在、每份报告都有快照横幅与索引指针、
+汇总表与表格行数一致。`--selftest` 用注入的坏数据证明**每条检查都能变红** ——
+一个不会失败的检查比没有检查更糟，它会一直报绿，然后没人再看。
+
+### 7.2 能确定性验证的
+
+- 编译 + `-Wall -Wextra -Wshadow -Wunused` 零警告。`-Wall -Wextra -Wshadow` 自 2026-09-23 起
+  **已进 `CMakeLists.txt`**（`target_compile_options`），所以真实构建本身就是这道检查；
+  下面的秒级静态检查仍保留 —— 它不跑 AUTOMOC，改一处时比全量构建快得多。
+  **注意：静态检查必须扫全树 `src/*.cpp`，不能只扫改过的文件** —— M1 就是这么发现 `WinWindowDetector.cpp` 里 8 个「先前就存在、单文件检查从未覆盖」的告警的。秒级命令（不跑 AUTOMOC）：
   ```
   g++ -std=c++17 -fsyntax-only -Wall -Wextra -Wshadow -Wunused -Isrc -I$QT/include{,/QtCore,/QtGui,/QtWidgets} src/**/*.cpp
   ```

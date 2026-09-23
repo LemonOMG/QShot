@@ -32,6 +32,7 @@ bash tools/smoke_deploy.sh        # 在打包目录里实际启动一次，验�
 | `bash build-review/build_probes.sh [--run] [名字...]` | 构建（并运行）全部验证探针与离屏渲染脚手架，无名字 = 全建全跑；结束时汇总断言总数 |
 | `bash tools/smoke_single_instance.sh [exe]` | 启动两份 qshot.exe，验证第二份拒绝启动、第一份退出后名字被交还；不带参数测 Debug 版，传 `dist/QShot/qshot.exe` 测发布版 |
 | `bash tools/make_icon.sh` | 重新生成 `resources/qshot.ico`（8 个尺寸）与放大拼版预览 |
+| `python tools/verify_review_status.py` | 校验审查问题状态索引与三份审查报告一致；`--selftest` 证明每条检查都能变红 |
 | `python tools/verify_icon.py` | 不依赖 Qt，解析并校验 ICO 容器结构 |
 | `python tools/verify_iss.py` | 安装包脚本的静态检查（BOM、宏、GUID、任务引用、路径是否存在） |
 
@@ -56,4 +57,7 @@ bash tools/smoke_deploy.sh        # 在打包目录里实际启动一次，验�
 
 - `docs/ROADMAP.md` —— 路线、里程碑、偏差记录、决策记录、验收手段
 - `docs/SETTINGS.md` —— 全部设置项与默认值
+- **`docs/REVIEW_STATUS.md` —— 审查问题状态索引。这是「某一项现在修没修」的唯一权威来源**
 - `docs/CODE_REVIEW.md`、`docs/CODE_REVIEW_ROUND2.md`、`docs/CODE_REVIEW_ROUND3.md` —— 历次代码审查
+  （**快照，不是待办清单**：它们记录当时发现了什么、当时修了什么，此后不再更新。
+  状态一律看 `REVIEW_STATUS.md` —— 由 `python tools/verify_review_status.py` 强制两边一致）

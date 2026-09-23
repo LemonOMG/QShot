@@ -79,3 +79,16 @@ if (WIN32)
     target_link_libraries(qshot PRIVATE dwmapi)
 endif()
 target_include_directories(qshot PRIVATE src)
+
+# Warnings on by default. Both review rounds reported defects that these flags would have
+# surfaced on their own (-Wshadow caught a shadowed `currentSelection`, -Wunused caught an
+# unused `drawButton` parameter), and the project's own static-check command has used them
+# since round 1 -- so leaving them off the real build meant the *cheap* check was stricter
+# than the build that actually ships.
+#
+# Guarded rather than unconditional because -Wextra is GCC/Clang syntax; MSVC would need
+# /W4. Nothing here targets MSVC today, but a bare `-Wall` in a cross-platform list is the
+# kind of thing that breaks a build years later with no obvious cause.
+if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(qshot PRIVATE -Wall -Wextra -Wshadow)
+endif()

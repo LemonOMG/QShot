@@ -1,8 +1,12 @@
 # QShot 代码审查报告（第三轮）
 
-> **修复状态已在 M6 清理（2026-09-23）时逐条复核更新。** 第四节表格的 ✅/❌ 是当前状态；
-> 正文里的叙述与「建议修复顺序」保留当时（2026-09-20）的判断，不要当成现状读 ——
-> 本轮复核就发现 P1-3/P1-6 其实早就修掉了，只是这张表没跟上。当前进度看 `ROADMAP.md`。
+> **这是快照，不是待办清单。** 本文记录 2026-09-20 当时的发现与判断，**此后不再更新**。
+> R3-1~R3-9 与 U-1~U-3 现在什么状态，只看 [`REVIEW_STATUS.md`](REVIEW_STATUS.md)。
+>
+> 本文是这套契约的**起因**：正文与「建议修复顺序」里带着当时的状态判定，第四节那张表
+> 曾经写着 N-2 ❌ 未修、P1-5 ⚠️ 待处理 —— 而这些在写完之后都修掉了，表却没跟上，
+> 于是第三轮之后又发生过一次「照着一份过期清单干活」。现在状态只在索引里，
+> 由 `python tools/verify_review_status.py` 强制一致。
 
 - 审查时间：2026-09-20
 - 基线提交：`32b1eed`（工作区干净，无未提交改动）
@@ -122,7 +126,8 @@ update();
 
 ### R3-6（P2）除 Idle 外所有状态都是整屏重绘
 
-> **已修（2026-09-23，性能项收尾轮）。** 下面保留发现时的描述。落地内容与实测：
+> **已修（2026-09-23，性能项收尾轮）。** 状态以 [`REVIEW_STATUS.md`](REVIEW_STATUS.md) 为准。
+> 下面保留发现时的描述。落地内容与实测：
 >
 > - `paintEvent` 改为按 `event->rect()` 裁剪，背景 `drawImage` 与遮罩都只画脏区；
 >   暗色遮罩从 `fullPath.subtracted(holePath)` 换成 4 个 `fillRect`（上/下/左/右，互不重叠 —— 遮罩色是半透明的，
@@ -179,7 +184,8 @@ src/overlay/ToolbarWidget.cpp:339:94: warning: unused parameter 'isAction' [-Wun
 
 ### R3-9（P3）
 
-> **已全部解决（2026-09-23 逐条复核确认）。** 下面保留发现时的描述，逐条对照如下：
+> **已全部解决（2026-09-23 逐条复核确认）。** 状态以 [`REVIEW_STATUS.md`](REVIEW_STATUS.md) 为准。
+> 下面保留发现时的描述，逐条对照如下：
 >
 > | 发现时的问题 | 现状 | 落在哪 |
 > | --- | --- | --- |
@@ -229,10 +235,14 @@ src/overlay/ToolbarWidget.cpp:339:94: warning: unused parameter 'isAction' [-Wun
 
 ## 四、上一轮遗留项状态
 
+> **这张表是 2026-09-20 的判定。** 保留它是因为它记录了「当时复核到了什么」，
+> 但其中至少 N-2、P1-5 两行已经过期（写完之后就修掉了）。现状见
+> [`REVIEW_STATUS.md`](REVIEW_STATUS.md)。
+
 | 编号 | 项 | 状态 |
 | --- | --- | --- |
 | N-1 | 多屏 overlay 键盘焦点错位 | ⚠️ **本轮找到真根因**（R3-2：`toolbar_->show()` 让 focusWindow 变 null，与屏幕数无关），升级为 P0 |
-| N-2 | `PlatformFactory` 返回 `nullptr` 未判空 | ❌ 未修（`ShotApplication.cpp:93-102`、`:138-141` 两处裸用） |
+| N-2 | `PlatformFactory` 返回 `nullptr` 未判空 | ❌ 未修（当时；**后由 M6 清理修掉**，现状见索引） |
 | N-3 | 保存功能三缺陷 | ✅ 已修 |
 | N-4 | `setDevicePixelRatio` 触发深拷贝 | ✅ 已修 |
 | N-5 | 手柄命中区偏移 | ✅ 已修（`hits()` lambda 统一 8 个手柄） |
@@ -242,7 +252,7 @@ src/overlay/ToolbarWidget.cpp:339:94: warning: unused parameter 'isAction' [-Wun
 | N-9 其余 | 工厂/焦点/坐标等细节 | ⚠️ 部分：`setGeometry` 重复调用、`currentOverlays_` 未清理失效 `QPointer`、`AnnotationLayer` 两处绘制逻辑未去重、`WinWindowDetector` 的 `EnumData` 未清零 + 仍是 `GetClassNameA`/`GetWindowLong`、`IScreenCapture.h` 仍 include `<QScreen>` |
 | P1-3 | 老式 `SIGNAL/SLOT` + `dynamic_cast<QObject*>` | ✅ **早已修掉，是这张表没跟上**：现用 `&IGlobalHotkey::hotkeyPressed`，全文无 `dynamic_cast<QObject*>`（M6 清理时复核） |
 | P1-4 | 单实例保护 + 热键无限重试 | ✅ 已修（M6 清理）—— 重试早已有上限（`kMaxHotkeyRetries`），本轮补上单实例保护：`core/ISingleInstance.h` + `WinSingleInstance` + `PlatformFactory::createSingleInstance()` |
-| P1-5 | 文本输入焦点未归还 | ⚠️ **本轮定位并升级为 R3-1（P0）** |
+| P1-5 | 文本输入焦点未归还 | ⚠️ **本轮定位并升级为 R3-1（P0）** —— R3-1 随后已修 |
 | P1-6 | `default: vk = qtKey;` 静默产出错误 VK | ✅ 主体早已修掉（`virtualKeyFor()` 显式映射表，未覆盖返回 0；`MOD_NOREPEAT` 已用宏）；本轮只剩 `hotkeyId_ = 1001` 魔数，已改 `constexpr int kHotkeyId` |
 | P1-8 | `trayMenu_` 泄漏（`new QMenu()` 无 parent） | ✅ 已修（M6 清理）—— `trayMenu_` 已是 `unique_ptr`；顺带把 `globalHotkey_` 的三份所有权表达收敛成 `unique_ptr` + 无父对象 |
 | P3 | 仓库残留（根 `main.cpp`、`Main.qml`、`build_output.txt`、空 `err.txt`/`out.txt`） | ✅ 已清理 |
@@ -250,6 +260,8 @@ src/overlay/ToolbarWidget.cpp:339:94: warning: unused parameter 'isAction' [-Wun
 ---
 
 ## 五、建议修复顺序
+
+> 当时排的顺序，只作历史记录 —— R3-1~R3-9 现在的状态见 [`REVIEW_STATUS.md`](REVIEW_STATUS.md)。
 
 1. **R3-1 + R3-2 + R3-3**（同一根因，一次改完，收益最大）—— 面板 `show()` 后 `overlay->activateWindow()`；文本框 `activateWindow() + setFocus()`；纯展示面板加 `Qt::WindowDoesNotAcceptFocus`；Esc/Enter/Ctrl+Z 改用 `Qt::ApplicationShortcut` 兜底
 2. **R3-5** 右键取消马赛克 —— 一行 `rebuildMosaicCache()`，但关系到"成品图正确性"
@@ -281,6 +293,9 @@ src/overlay/ToolbarWidget.cpp:339:94: warning: unused parameter 'isAction' [-Wun
 ---
 
 ## 七、本轮已落地的修复
+
+> 本节记录第三轮**当时做了什么**，属于历史；各项现在什么状态见
+> [`REVIEW_STATUS.md`](REVIEW_STATUS.md)。
 
 按第五节顺序落地了第 1、2 步及第 5 步的清理项（共 7 个文件，+117 / −34 行）。
 
@@ -321,9 +336,8 @@ src/overlay/ToolbarWidget.cpp:339:94: warning: unused parameter 'isAction' [-Wun
 
 R3-4（多屏坐标空间统一，需先定约定 + 双屏实测）、R3-6（四个状态的局部重绘）、R3-9 剩余项，以及上一轮遗留的 N-2、N-7、P1-3/4/6/8、P3 仓库残留。
 
-> 后续（截至 2026-09-23）：N-2 / N-7 / P1-3 / P1-4 / P1-6 / P1-8 / P3 已在 M6 清理完成；
-> **R3-6 已在性能项收尾轮完成**；**R3-9 六条已逐条复核确认全部解决**（见本节 R3-9 的状态块）。
-> 此处**只剩 R3-4**，且它需要真双屏人工确认，不是代码问题。
+> **这份清单当时是对的，现在全部处理完了** —— 逐条状态见 [`REVIEW_STATUS.md`](REVIEW_STATUS.md)。
+> 其中 R3-9 的六条在 2026-09-23 复核时确认**全部早已解决**，只是报告没跟上。
 
 ## 八、UI 可用性修复（用户反馈驱动）
 
@@ -379,8 +393,6 @@ R3-4（多屏坐标空间统一，需先定约定 + 双屏实测）、R3-6（四
 
 R3-4、R3-6、R3-9 剩余项，以及上一轮遗留的 N-2、N-7、P1-3/4/6/8、P3 仓库残留，均未变动。
 
-> **后续（截至 2026-09-23）**：除 R3-4（需真双屏人工确认，非代码问题）外，**其余全部已收尾** ——
-> N-2 / N-7 / P1-3 / P1-4 / P1-6 / P1-8 / P3 见 M6 清理，**R3-6 见性能项收尾轮**
-> （本节 R3-6 的状态块、`CODE_REVIEW.md` P2 各条的「现状」块、`ROADMAP.md` §3.7），
-> **R3-9 见本节 R3-9 的状态块**（六条逐条复核，全部早已解决）。
+> **「均未变动」是 2026-09-20 的说法。** 这些项后来全部收尾（R3-4 需真双屏人工确认，
+> 不是代码问题）。逐条状态见 [`REVIEW_STATUS.md`](REVIEW_STATUS.md)。
 

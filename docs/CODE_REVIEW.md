@@ -1,5 +1,13 @@
 # QShot 代码审查报告
 
+> **这是快照，不是待办清单。** 本文记录 2026-09-19 当时的发现与判断，**此后不再更新**。
+> 「某一项现在修没修」只有一个地方有答案：[`REVIEW_STATUS.md`](REVIEW_STATUS.md)。
+>
+> 为什么反复强调：状态曾经散落在三份报告、八个不同小节里，每节在写下的那天都是对的，
+> 合起来就是错的。P1-3/P1-6/P1-8、P2-2/P2-3、R3-9 六项都在别的轮次里顺手修掉了，
+> 而报告一直挂着「未处理」—— 于是要么重复劳动，要么以为活干完了而实际没干。
+> 现在由 `python tools/verify_review_status.py` 强制两边一致。
+
 - 审查时间：2026-09-19
 - 审查范围：`src/`（22 个文件）、`CMakeLists.txt`、`docs/`、仓库根目录残留
 - 验证方式：
@@ -138,6 +146,10 @@
 
 ## P2 性能
 
+> 本节四条的状态见 [`REVIEW_STATUS.md`](REVIEW_STATUS.md) 的 P2-1~P2-4 行。
+> 下面每条末尾的「处置」是 2026-09-23 复核时留下的**判断与实测**（含刻意不做的理由），
+> 那不是状态 —— 状态只在索引里。
+
 > **状态（2026-09-23，性能项收尾轮复核）**：本节四条已全部处理，复核方式见各条末尾的「现状」。
 > 下面保留的是**发现时**的描述与建议，其中的行号、代码片段和部分建议（例如「叠一个 ~16ms 合并节流」）已经过时，
 > 不要照着改。性能项的实测证据与最终实现见 `docs/ROADMAP.md` §3.7 和探针 `build-review/probe_partial_repaint.cpp`。
@@ -152,7 +164,7 @@
   以 60Hz 鼠标事件计算，必然明显掉帧。
 - 建议：只处理本次笔迹的**增量包围盒**（上一位置到当前位置的矩形外扩 `mosaicSize`），掩膜与 mosaicLayer_ 复用同一缓冲不再重建；再叠一个 ~16ms 的合并节流。这样单次代价从 O(W·H) 降到 O(笔迹面积)。
 
-**现状：已修（增量包围盒在 M6 清理的 N-7 落地，本轮复核）。** `updateMosaic(annotation, logicalDirty)` 现在只处理
+**处置（2026-09-23 复核）：增量包围盒在 M6 清理的 N-7 落地，本轮复核确认。** `updateMosaic(annotation, logicalDirty)` 现在只处理
 `mouseMoveEvent` 传进来的那一段笔迹，掩膜/图层在首次使用时分配一次后复用（见 P2-4）。
 实测：全路径 98ms → 增量 7ms（`probe_mosaic_incremental`，10 checks / 0 failures）。
 **建议里的 16ms 合并节流刻意不做**：`QWidget::update()` 本身就把同一次事件循环内的多次请求合并成一次 paint，
@@ -164,7 +176,7 @@
 - 现象：`Idle` 分支无条件 `update()`，触发整张虚拟屏背景位图重绘 + 放大镜重建（含 `QImage` 分配、`copy`、`scaled`）。多屏 4K 下每次移动都是几十 MB 的像素搬运。
 - 建议：改为局部更新——`update(oldMagnifierRect.united(newMagnifierRect))`，背景部分用 `WA_OpaquePaintEvent` + 只在需要时重绘；放大镜的 `srcImage` 也可以复用成员缓冲而非每次 new。
 
-**现状：已修（局部更新本轮复核，放大镜缓冲刻意不动）。** Idle 分支现在只重绘 `magnifierRect(old) ∪ magnifierRect(new)`，
+**处置（2026-09-23 复核）：局部更新早已落地，本轮改用统一辅助函数并实测；放大镜缓冲刻意不动。** Idle 分支现在只重绘 `magnifierRect(old) ∪ magnifierRect(new)`，
 实测占屏幕 8.55%（`probe_partial_repaint`）。`WA_OpaquePaintEvent` 不需要：`paintEvent` 本来就把不透明背景图铺满整块。
 放大镜的 `srcImage` **保持每次新建**：它的尺寸由面板决定（`srcPhysicalW × srcPhysicalH` ≈ 50×47 物理像素，
 放大后 264×204 逻辑像素），与屏幕大小无关，复用它省下的是每帧约一万像素的分配，不值得引入一个需要自己维护尺寸的成员缓冲。
@@ -175,7 +187,7 @@
 - 位置：`SnapOverlay.h:54-55`（`backgroundPixmap_` + `backgroundImage_`）
 - 建议：只保留 `QImage`（`QPainter` 可直接画 `QImage`），或按需 `toImage()` 缓存，省掉一半常驻内存。
 
-**现状：已修（本轮复核）。** `backgroundPixmap_` 已不存在，只剩 `SnapOverlay.h` 里的 `backgroundImage_`，
+**处置（2026-09-23 复核）：早已修掉。** `backgroundPixmap_` 已不存在，只剩 `SnapOverlay.h` 里的 `backgroundImage_`，
 构造时由 `QPixmap::toImage()` 一次性转换（`QPixmap` 会在 `QImage` 里保留 DPR，所以 `drawImage` 不需要额外处理）。
 
 ### P2-4 每次拖动/缩放结束都重新裁切三张大图
@@ -183,7 +195,7 @@
 - 位置：`AnnotationLayer.cpp:134-160`（`setBaseImage`，每次 release 都调用）
 - 现象：每次 `setBaseImage` 都重新分配 `baseImage_` / `mosaicLayer_` / `mosaicMask_` 三张选区大小的图。连续拖拽选区会持续抖动内存分配。当前逻辑上是安全的（有标注时会锁定选区、禁止移动缩放，不会出现标注错位），但可以按需分配——只在真正用到马赛克时才建 `mosaicLayer_/mosaicMask_`。
 
-**现状：已修（本轮复核）。** `mosaicLayer_` / `mosaicMask_` 改为在 `updateMosaic()` 里首次真正用到时才分配，
+**处置（2026-09-23 复核）：图层改懒分配；顺带修掉一个反向问题。** `mosaicLayer_` / `mosaicMask_` 改为在 `updateMosaic()` 里首次真正用到时才分配，
 `setBaseImage()` 只置空它们。`baseImage_` 仍是每次 release 裁一张 —— 这是**必要**的：它是马赛克取平均值的底图，
 延后分配就得同时持有整屏背景，省下的那一次裁剪远不及多出来的常驻内存。
 本轮还顺手补了一个反向问题：图层分配后即使被清空（undo 掉最后一个马赛克）也仍然存在，
@@ -217,6 +229,8 @@
 ---
 
 ## 建议修复顺序（最小 diff 优先）
+
+> 当时排的顺序，只作历史记录 —— 这些项现在的状态见 [`REVIEW_STATUS.md`](REVIEW_STATUS.md)。
 
 1. **P0-2 / P0-3 / P0-4 / P0-5**：4 处都是几行内的小改动，先修，风险最低。
 2. **P0-1**：补 `AnnotationLayer::renderToImage()`，复制与保存共用（顺带落地「保存」功能）。

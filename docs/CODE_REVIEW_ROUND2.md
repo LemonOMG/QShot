@@ -1,5 +1,12 @@
 # QShot 代码审查报告（第二轮 · 复审）
 
+> **这是快照，不是待办清单。** 本文记录 2026-09-19 当时的发现与判断，**此后不再更新**。
+> 第一轮那些项（P0/P1/P2/P3）现在什么状态，只看 [`REVIEW_STATUS.md`](REVIEW_STATUS.md)。
+>
+> ⚠️ 下文第一节「上轮问题修复核对」的 ✅/❌ 是**当时的**结论。它在写下那天是对的，
+> 但里面已经有多条过期 —— 例如它写着 P1-3/P1-4/P1-8 ❌ 未修，这些后来都修掉了。
+> 不要拿那张表当现状。校验器：`python tools/verify_review_status.py`。
+
 - 复审时间：2026-09-19
 - 对比基线：`e291fd5`（首轮审查的代码状态）
 - 复审范围：15 个改动文件 + 2 个新增文件（`src/core/PlatformFactory.{h,cpp}`）
@@ -14,6 +21,10 @@
 ---
 
 ## 一、上轮问题修复核对
+
+> **这张表是 2026-09-19 的判定，已经过期**（其中 P1-3/P1-4/P1-5/P1-6/P1-8、P0-3、P2-1、P2-2、P3
+> 都在这之后修掉了）。保留它是因为它记录了「当时复核到了什么」；现状见
+> [`REVIEW_STATUS.md`](REVIEW_STATUS.md)。
 
 | 编号 | 问题 | 状态 | 说明 |
 | --- | --- | --- | --- |
@@ -188,6 +199,15 @@
 
 ## 三、仍未处理的 P3 项（首轮已提，本轮未动）
 
+> **标题里的「仍未处理」是 2026-09-19 的说法。** 这一节的五项，现状（逐条见
+> [`REVIEW_STATUS.md`](REVIEW_STATUS.md) 的 P3 行）：
+>
+> - 仓库残留 —— **已清**（`main.cpp`/`Main.qml`/`build_output.txt`/`err.txt`/`out.txt` 均不存在）
+> - `CMakeLists.txt` 未开 `-Wall -Wextra` —— **已开**（`target_compile_options`，构建零警告）
+> - 无测试、无 CI —— **仍未做**
+> - `docs/ARCHITECTURE.md` / `TASKS.md` 描述失配 —— **已消失**（两个文件都已不存在，问题随之作废）
+> - `.workbuddy-ai/` 未跟踪 —— **已纳入版本控制**
+
 - 仓库残留：根目录 `main.cpp`（Qt Quick 模板，`loadFromModule("QShot","Main")`）、`Main.qml`、`build_output.txt`（里面还留着一次**失败**的构建记录，容易误导）、空的 `err.txt` / `out.txt`。
 - `CMakeLists.txt` 仍未开启 `-Wall -Wextra`。当前实测存在 4 类警告：`-Wshadow`（`SnapOverlay.cpp:236` 的 `currentSelection` 遮蔽）、未使用参数（`ToolbarWidget.cpp:339` 的 `isAction`）、`MONITORINFOEXW` 部分初始化（`WinWindowDetector.cpp:66,102`）。开启后这类问题下次会自己暴露。
 - 无测试、无 CI。`AnnotationLayer`（坐标/DPR 换算、马赛克增量）和 `PlatformFactory` 都是纯逻辑，适合 QtTest 覆盖。
@@ -210,6 +230,8 @@
 
 ## 五、建议修复顺序
 
+> 当时排的顺序，只作历史记录 —— N-1~N-9 现在的状态见 [`REVIEW_STATUS.md`](REVIEW_STATUS.md)。
+
 1. **N-4**（删两行 + 挪一次 `setDevicePixelRatio`）—— 收益最大、风险最低，每次重绘省一次整屏 memcpy。
 2. **N-5 / N-6 / N-9 前三条** —— 纯局部改动，顺手做掉。
 3. **N-3**（保存失败提示 + 对话框 parent）—— 用户可感知的健壮性提升。
@@ -221,6 +243,9 @@
 ---
 
 ## 六、本轮已落地的修复
+
+> 本节记录第二轮**当时做了什么**，属于历史；各项现在什么状态见
+> [`REVIEW_STATUS.md`](REVIEW_STATUS.md)。
 
 以下改动已完成，并通过构建 + 启动冒烟测试。
 
@@ -244,6 +269,9 @@
 - **渲染等价性**：`drawImage(0,0,image)` 遵循图片自身 DPR 已由探针实测确认（8×8 @DPR2 覆盖 16×16），因此去掉那两行不改变绘制结果。
 
 ### 仍未处理（建议下一轮）
+
+> **这是 2026-09-19 的清单，已经全部处理完**（N-1/N-2/N-7/N-9/P1-3/P1-4/P1-5/P1-8/P3 逐条见
+> [`REVIEW_STATUS.md`](REVIEW_STATUS.md)）。保留原文以记录当时还欠什么。
 
 - **N-1** 多屏键盘焦点（需双屏环境验证）
 - **N-2** 工厂 `nullptr` 判空 / Null Object（决定「跨平台」是否当真）
