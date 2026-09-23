@@ -1,17 +1,13 @@
 #include "SnapOverlay.h"
+#include "SelectionGeometry.h"
+#include "FloatingPanel.h"
 #include <QPainter>
 #include <QMouseEvent>
 #include <QKeyEvent>
-#include <QApplication>
-#include <QClipboard>
 #include <QPainterPath>
-#include <QDir>
-#include <QFileDialog>
-#include <QFileInfo>
-#include <QMessageBox>
-#include <QStandardPaths>
-#include <QtMath>
 
+#include "core/HistoryStore.h"
+#include "core/ImageExport.h"
 #include "core/PlatformFactory.h"
 #include "core/Settings.h"
 #include "core/Strings.h"
@@ -19,20 +15,11 @@
 namespace qshot {
 
 namespace {
-// Magnifier / mouse-info panel tuning. Shared by paintEvent() and magnifierLayout()
-// so that the drawn panel and the repainted region can never disagree.
-constexpr int kMagMinSize       = 140; // minimum magnifier edge length, logical px
-constexpr int kMagZoom          = 4;   // magnification factor
-constexpr int kMagPadding       = 8;
-constexpr int kMagLineSpacing   = 4;
-constexpr int kMagColorBlockSize = 12;
-constexpr int kMagFontPixelSize = 12;
-constexpr int kMagCursorGap     = 12;  // gap between cursor and panel
-constexpr int kMagRowCount      = 3;   // RGB / HEX / POS
-
-// "click to type" badge shown next to the cursor while the text tool is armed
-constexpr int kHintFontPixelSize = 12;
-constexpr int kHintPadding       = 6;
+// "click to type" badge shown next to the cursor while the text tool is armed.
+// Its font comes from panel::uiFontMetrics() so that the rectangle measured in
+// textHintRect() and the text drawn in paintEvent() can never disagree.
+constexpr int kHintPadding   = 6;
+constexpr int kHintCursorGap = 12; // matches the magnifier panel's own gap
 
 QString textHintString() {
     // Deliberately *not* cached in a function-local static: that would freeze the
@@ -45,6 +32,7 @@ SnapOverlay::SnapOverlay(const QPixmap& background, const QRect& screenGeometry,
     : QWidget(parent)
     , backgroundImage_(background.toImage())
     , dpr_(background.devicePixelRatio())
+    , screenGeometry_(screenGeometry)
     , currentMousePos_(-1, -1)
     , isMouseValid_(false)
 {
@@ -63,7 +51,13 @@ SnapOverlay::SnapOverlay(const QPixmap& background, const QRect& screenGeometry,
     connect(&hoverTimer_, &QTimer::timeout, this, [this]() {
         if (state_ != OverlayState::Idle) return;
         if (!detector_) return;
-        QRect newHover = detector_->windowRectAt(lastHoverPos_);
+        // The detector answers in global desktop coordinates, because that is what
+        // "which window is under this desktop point" means. Everything below --
+        // painting, the selection, the dirty rectangles -- is in this widget's own
+        // space, so the conversion happens here, once, at the single point where the
+        // value enters.
+        const QRect newHover = detector_->windowRectAt(lastHoverPos_)
+                                   .translated(-globalOrigin());
         if (newHover != hoverWindowRect_) {
             // Only the hover outline and the dimmed "hole" change, so repaint just
             // the union of the old and new rectangles (expanded for the 2px border).
@@ -89,11 +83,12 @@ SnapOverlay::SnapOverlay(const QPixmap& background, const QRect& screenGeometry,
     connect(toolbar_, &ToolbarWidget::saveRequested, this, [this]() {
         // Keep the overlay alive when saving fails or is cancelled, so the user
         // does not lose their selection and annotations.
-        if (saveToFile()) {
+        if (!saveToFile().isEmpty()) {
             close();
             emit closed();
         }
     });
+    connect(toolbar_, &ToolbarWidget::pinRequested, this, &SnapOverlay::pinSelection);
     
     textInput_ = new TextInputWidget(this);
     textInput_->hide();
@@ -103,7 +98,11 @@ SnapOverlay::SnapOverlay(const QPixmap& background, const QRect& screenGeometry,
             a.type = AnnotationType::Text;
             a.color = toolbar_->currentSettings().color;
             a.fontSize = toolbar_->currentSettings().fontSize;
-            a.points.append(textInput_->pos() - selectionRect_.normalized().topLeft());
+            // The editor is a separate top-level window, so its pos() is in global
+            // desktop coordinates. Annotation points are relative to the selection's
+            // top-left in *this* widget's space, hence the mapFromGlobal().
+            a.points.append(mapFromGlobal(textInput_->pos())
+                            - selectionRect_.normalized().topLeft());
             a.text = text;
             annotationLayer_.add(a);
             toolbar_->setUndoEnabled(true);
@@ -127,9 +126,17 @@ SnapOverlay::~SnapOverlay() = default;
 
 void SnapOverlay::showToolbar() {
     if (selectionRect_.isEmpty()) return;
-    toolbar_->updatePosition(selectionRect_.normalized(), rect());
+    // The toolbar is its own top-level window, so it has to be told where to go in
+    // global coordinates, and it does its boundary arithmetic against the screen it
+    // must stay inside. Both are therefore global.
+    toolbar_->updatePosition(selectionRect_.normalized().translated(globalOrigin()),
+                             screenGeometry_);
     toolbar_->show();
     reclaimKeyboardFocus();
+}
+
+QPoint SnapOverlay::globalOrigin() const {
+    return mapToGlobal(QPoint(0, 0));
 }
 
 void SnapOverlay::hideToolbar() {
@@ -154,7 +161,12 @@ void SnapOverlay::handleToolSelection(AnnotationType /*type*/) {
 }
 
 void SnapOverlay::handleUndo() {
-    annotationLayer_.undo();
+    const AnnotationType removed = annotationLayer_.undo();
+    // Give the number back. Undoing badge 3 and placing another should produce 3, not 4 --
+    // otherwise undo leaves a permanent gap in the sequence the user cannot close.
+    if (removed == AnnotationType::Number && nextNumber_ > 1) {
+        --nextNumber_;
+    }
     toolbar_->setUndoEnabled(!annotationLayer_.isEmpty());
     update();
 }
@@ -162,6 +174,12 @@ void SnapOverlay::handleUndo() {
 void SnapOverlay::finishAnnotation() {
     if (state_ == OverlayState::Annotating) {
         annotationLayer_.add(activeAnnotation_);
+        // The number was claimed at press time so the badge could show it while being
+        // placed; committing is what consumes it. A cancelled placement therefore returns
+        // the number to the pool rather than leaving a gap in the sequence.
+        if (activeAnnotation_.type == AnnotationType::Number) {
+            ++nextNumber_;
+        }
         toolbar_->setUndoEnabled(true);
         activeAnnotation_.points.clear();
         state_ = OverlayState::Selected;
@@ -222,18 +240,11 @@ void SnapOverlay::paintEvent(QPaintEvent* event) {
         
         // Draw 8 control points (ONLY if unlocked)
         if (annotationLayer_.isEmpty() && (!textInput_ || !textInput_->isVisible())) {
-            int cpSize = 6;
+            constexpr int kControlPointSize = 6;
             painter.setBrush(QColor(26, 173, 25));
             painter.setPen(Qt::NoPen);
-            
-            int xs[3] = { currentSelection.left(), currentSelection.center().x(), currentSelection.right() - 1 };
-            int ys[3] = { currentSelection.top(), currentSelection.center().y(), currentSelection.bottom() - 1 };
-            
-            for (int i = 0; i < 3; ++i) {
-                for (int j = 0; j < 3; ++j) {
-                    if (i == 1 && j == 1) continue; // Skip center
-                    painter.drawRect(xs[i] - cpSize / 2, ys[j] - cpSize / 2, cpSize, cpSize);
-                }
+            for (const QRect& grip : selection::controlPointRects(currentSelection, kControlPointSize)) {
+                painter.drawRect(grip);
             }
         }
         
@@ -245,7 +256,11 @@ void SnapOverlay::paintEvent(QPaintEvent* event) {
         QRect textRect = fm.boundingRect(dimensionsText);
         textRect.adjust(-4, -2, 4, 2);
         
-        // Position the text box above the selection if possible, otherwise inside or below
+        // Position the text box above the selection if possible, otherwise inside or below.
+        // 0 is the correct boundary here: this badge is painted into the overlay's own
+        // surface, whose origin is the top-left of the screen it covers. Contrast the
+        // toolbar and the text editor, which are separate top-level windows and
+        // therefore need global coordinates.
         int textX = currentSelection.left();
         int textY = currentSelection.top() - textRect.height() - 5;
         if (textY < 0) {
@@ -267,128 +282,18 @@ void SnapOverlay::paintEvent(QPaintEvent* event) {
     }
     
     // Draw floating mouse info panel (only when Idle or Dragging)
-    OverlayState state = state_;
-    if (isMouseValid_ && rect().contains(currentMousePos_) && (state == OverlayState::Idle || state == OverlayState::Dragging)) {
-        // 1. Calculate relative coordinates
+    const OverlayState state = state_;
+    if (isMouseValid_ && rect().contains(currentMousePos_)
+        && (state == OverlayState::Idle || state == OverlayState::Dragging)) {
+        // While dragging the readout shows the coordinate relative to the selection's
+        // top-left; while idle it shows the absolute position.
         QPoint relPos = currentMousePos_;
-        if (state == OverlayState::Dragging) {
-            // Reuse the selection computed at the top of paintEvent().
-            if (!currentSelection.isEmpty()) {
-                relPos = currentMousePos_ - currentSelection.topLeft();
-            }
+        if (state == OverlayState::Dragging && !currentSelection.isEmpty()) {
+            relPos = currentMousePos_ - currentSelection.topLeft();
         }
-        
-        // 2. Sample pixel color
-        qreal dpr = dpr_;
-        QPoint scaledPos(qRound(currentMousePos_.x() * dpr), qRound(currentMousePos_.y() * dpr));
-        
-        QColor pixelColor = Qt::black;
-        if (backgroundImage_.valid(scaledPos)) {
-            pixelColor = backgroundImage_.pixelColor(scaledPos);
-        }
-        
-        // 3. Prepare text and panel layout
-        const int padding = kMagPadding;
-        const int lineSpacing = kMagLineSpacing;
-        const int colorBlockSize = kMagColorBlockSize;
-        
-        QString rgbText = QString("RGB: (%1, %2, %3)").arg(pixelColor.red()).arg(pixelColor.green()).arg(pixelColor.blue());
-        QString hexText = QString("HEX: %1").arg(pixelColor.name().toUpper());
-        QString coordText = QString("POS: %1, %2").arg(relPos.x()).arg(relPos.y());
-        
-        QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-        font.setPixelSize(kMagFontPixelSize);
-        QFontMetrics fm(font);
-        
-        // Panel geometry is shared with mouseMoveEvent() so that partial repaints
-        // always cover exactly what is drawn here.
-        const MagnifierLayout layout = magnifierLayout(currentMousePos_);
-        const int boxX = layout.panel.x();
-        const int boxY = layout.panel.y();
-        const int boxWidth = layout.panel.width();
-        const int boxHeight = layout.panel.height();
-        const int finalMagSize = layout.magHeight;
-        const int srcPhysicalW = layout.srcPhysicalW;
-        const int srcPhysicalH = layout.srcPhysicalH;
-        const int magPhysicalW = srcPhysicalW * kMagZoom;
-        const int magPhysicalH = srcPhysicalH * kMagZoom;
-        
-        // 4. Draw background with rounded corners and no outer border
-        painter.save();
-        painter.setRenderHint(QPainter::Antialiasing, true);
-        
-        QPainterPath clipPath;
-        clipPath.addRoundedRect(boxX, boxY, boxWidth, boxHeight, 8, 8);
-        painter.setClipPath(clipPath);
-        
-        painter.setPen(Qt::NoPen);
-        
-        // Draw the full box first
-        painter.setBrush(Qt::black);
-        painter.drawRect(boxX, boxY, boxWidth, boxHeight);
-        
-        // Fill text area with white
-        QRectF textBgRect(boxX, boxY + finalMagSize, boxWidth, boxHeight - finalMagSize);
-        painter.setBrush(Qt::white);
-        painter.drawRect(textBgRect);
-        
-        // 5. Draw magnifier
-        int srcX = scaledPos.x() - srcPhysicalW / 2;
-        int srcY = scaledPos.y() - srcPhysicalH / 2;
-        QRect physicalSrcRect(srcX, srcY, srcPhysicalW, srcPhysicalH);
-        
-        QImage srcImage(physicalSrcRect.size(), QImage::Format_ARGB32);
-        srcImage.fill(Qt::black);
-        srcImage.setDevicePixelRatio(1.0); // CRITICAL: Avoid Qt auto-scaling when drawing onto this
-        
-        QRect intersect = physicalSrcRect.intersected(backgroundImage_.rect());
-        if (!intersect.isEmpty()) {
-            QImage cropped = backgroundImage_.copy(intersect);
-            cropped.setDevicePixelRatio(1.0); // CRITICAL: Ensure 1:1 pixel copy
-            QPainter p(&srcImage);
-            p.drawImage(intersect.topLeft() - physicalSrcRect.topLeft(), cropped);
-        }
-        
-        QImage magnifiedImage = srcImage.scaled(magPhysicalW, magPhysicalH, Qt::IgnoreAspectRatio, Qt::FastTransformation);
-        painter.drawImage(QRectF(boxX, boxY, boxWidth, finalMagSize), magnifiedImage);
-        
-        // Magnifier crosshair (十字型坐标系)
-        // Since the physical source has odd dimensions, the exact center maps precisely to 50% of the box
-        qreal crosshairX = boxX + boxWidth / 2.0;
-        qreal crosshairY = boxY + finalMagSize / 2.0;
-        
-        painter.setPen(QPen(QColor(0, 255, 0, 150), 2));
-        painter.drawLine(QPointF(crosshairX, boxY), QPointF(crosshairX, boxY + finalMagSize));
-        painter.drawLine(QPointF(boxX, crosshairY), QPointF(boxX + boxWidth, crosshairY));
-        
-        // Remove the border separating magnifier and text to make it cleaner
-        
-        // 6. Draw contents (Text area)
-        painter.setFont(font);
-        
-        int currentY = boxY + finalMagSize + padding + fm.ascent();
-        
-        // Row 1: RGB
-        painter.setPen(Qt::black);
-        painter.drawText(boxX + padding, currentY, rgbText);
-        
-        // Row 2: Color block + Hex
-        currentY += fm.height() + lineSpacing;
-        int blockY = currentY - fm.ascent() + (fm.height() - colorBlockSize) / 2;
-        
-        painter.setPen(QPen(Qt::black, 1));
-        painter.setBrush(pixelColor);
-        painter.drawRect(boxX + padding, blockY, colorBlockSize, colorBlockSize);
-        
-        painter.setPen(Qt::black);
-        painter.drawText(boxX + padding + colorBlockSize + 4, currentY, hexText);
-        
-        // Row 3: Coordinates
-        currentY += fm.height() + lineSpacing;
-        painter.setPen(Qt::black);
-        painter.drawText(boxX + padding, currentY, coordText);
-        
-        painter.restore();
+
+        panel::paintMagnifier(painter, backgroundImage_, dpr_, currentMousePos_, relPos,
+                              panel::computeMagnifierLayout(currentMousePos_, rect(), dpr_));
     }
 
     // "Click to type" badge: with the text tool armed, clicking inside the selection
@@ -403,57 +308,11 @@ void SnapOverlay::paintEvent(QPaintEvent* event) {
         hintPath.addRoundedRect(hint, 4, 4);
         painter.fillPath(hintPath, QColor(26, 173, 25, 235));
 
-        QFont hintFont = painter.font();
-        hintFont.setPixelSize(kHintFontPixelSize);
-        painter.setFont(hintFont);
+        painter.setFont(panel::uiFont());
         painter.setPen(Qt::white);
         painter.drawText(hint, Qt::AlignCenter, textHintString());
         painter.restore();
     }
-}
-
-SnapOverlay::MagnifierLayout SnapOverlay::magnifierLayout(const QPoint& mousePos) const {
-    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
-    font.setPixelSize(kMagFontPixelSize);
-    const QFontMetrics fm(font);
-
-    // Worst-case text widths: three RGB components and five-digit coordinates.
-    // Using a fixed budget (instead of the currently sampled values) keeps the panel
-    // from resizing as the cursor moves, which is both steadier to look at and what
-    // makes the rect usable as a repaint region.
-    const int rgbWidth  = fm.horizontalAdvance(QStringLiteral("RGB: (255, 255, 255)"));
-    const int hexWidth  = kMagColorBlockSize + 4 + fm.horizontalAdvance(QStringLiteral("HEX: #FFFFFF"));
-    const int posWidth  = fm.horizontalAdvance(QStringLiteral("POS: -99999, -99999"));
-    const int textWidth = qMax(qMax(rgbWidth, hexWidth), posWidth);
-
-    const int initialBoxWidth = qMax(kMagMinSize, textWidth + kMagPadding * 2);
-
-    // To avoid subpixel alignment issues we crop the physical image, scale it with
-    // nearest neighbour, and force the centre physical pixel onto the crosshair.
-    int srcPhysicalW = qRound(initialBoxWidth * dpr_ / kMagZoom);
-    if (srcPhysicalW % 2 == 0) ++srcPhysicalW; // odd width => true centre pixel
-    int srcPhysicalH = qRound(kMagMinSize * dpr_ / kMagZoom);
-    if (srcPhysicalH % 2 == 0) ++srcPhysicalH; // odd height => true centre pixel
-
-    MagnifierLayout layout;
-    layout.srcPhysicalW = srcPhysicalW;
-    layout.srcPhysicalH = srcPhysicalH;
-    layout.magHeight = qCeil(srcPhysicalH * kMagZoom / dpr_);
-    const int boxWidth = qCeil(srcPhysicalW * kMagZoom / dpr_);
-    const int boxHeight = layout.magHeight + kMagPadding * 2
-                        + fm.height() * kMagRowCount + kMagLineSpacing * (kMagRowCount - 1);
-
-    int boxX = mousePos.x() + kMagCursorGap;
-    int boxY = mousePos.y() + kMagCursorGap;
-    if (boxX + boxWidth > rect().right()) {
-        boxX = mousePos.x() - kMagCursorGap - boxWidth;
-    }
-    if (boxY + boxHeight > rect().bottom()) {
-        boxY = mousePos.y() - kMagCursorGap - boxHeight;
-    }
-
-    layout.panel = QRect(boxX, boxY, boxWidth, boxHeight);
-    return layout;
 }
 
 bool SnapOverlay::textToolArmed() const {
@@ -470,60 +329,18 @@ bool SnapOverlay::shouldShowTextHint() const {
 }
 
 QRect SnapOverlay::textHintRect(const QPoint& mousePos) const {
-    QFont font = QApplication::font();
-    font.setPixelSize(kHintFontPixelSize);
-    const QFontMetrics fm(font);
+    const QFontMetrics& fm = panel::uiFontMetrics();
     const int w = fm.horizontalAdvance(textHintString()) + kHintPadding * 2;
     const int h = fm.height() + kHintPadding;
-
-    // Same flip logic as the magnifier panel, so the badge never leaves the screen.
-    int x = mousePos.x() + kMagCursorGap;
-    int y = mousePos.y() + kMagCursorGap;
-    if (x + w > rect().right()) {
-        x = mousePos.x() - kMagCursorGap - w;
-    }
-    if (y + h > rect().bottom()) {
-        y = mousePos.y() - kMagCursorGap - h;
-    }
-    return QRect(x, y, w, h);
-}
-
-Handle SnapOverlay::hitTestHandle(const QPoint& pos) const {
-    if (selectionRect_.isEmpty()) return Handle::None;
-
-    const int m = 8;
-    const QRect r = selectionRect_;
-
-    // Every handle is a 2m x 2m square centred on its anchor point. Keep it that way
-    // for all eight handles -- off-centre hit areas are invisible but very annoying.
-    const auto hits = [&pos, m](const QPoint& anchor) {
-        return QRect(anchor - QPoint(m, m), QSize(2 * m, 2 * m)).contains(pos);
-    };
-
-    if (hits(r.topLeft()))     return Handle::TopLeft;
-    if (hits(r.topRight()))    return Handle::TopRight;
-    if (hits(r.bottomLeft()))  return Handle::BottomLeft;
-    if (hits(r.bottomRight())) return Handle::BottomRight;
-    if (hits(QPoint(r.center().x(), r.top())))    return Handle::Top;
-    if (hits(QPoint(r.center().x(), r.bottom()))) return Handle::Bottom;
-    if (hits(QPoint(r.left(),  r.center().y())))  return Handle::Left;
-    if (hits(QPoint(r.right(), r.center().y())))  return Handle::Right;
-    return Handle::None;
+    return panel::placeNearCursor(QSize(w, h), mousePos, rect(), kHintCursorGap);
 }
 
 void SnapOverlay::updateCursorForPos(const QPoint& pos) {
     if (state_ == OverlayState::Selected) {
-        Handle h = hitTestHandle(pos);
-        switch (h) {
-            case Handle::TopLeft:
-            case Handle::BottomRight: setCursor(Qt::SizeFDiagCursor); return;
-            case Handle::TopRight:
-            case Handle::BottomLeft:  setCursor(Qt::SizeBDiagCursor); return;
-            case Handle::Top:
-            case Handle::Bottom:      setCursor(Qt::SizeVerCursor);   return;
-            case Handle::Left:
-            case Handle::Right:       setCursor(Qt::SizeHorCursor);   return;
-            default: break;
+        const selection::Handle h = selection::hitTestHandle(selectionRect_, pos);
+        if (h != selection::Handle::None) {
+            setCursor(selection::cursorForHandle(h));
+            return;
         }
         if (selectionRect_.contains(pos)) {
             if (toolbar_ && toolbar_->currentTool() == AnnotationType::Text) {
@@ -553,8 +370,10 @@ void SnapOverlay::mousePressEvent(QMouseEvent* event) {
         if (state_ == OverlayState::Selected) {
             bool isLocked = !annotationLayer_.isEmpty() || (textInput_ && textInput_->isVisible());
             
-            Handle h = isLocked ? Handle::None : hitTestHandle(event->pos());
-            if (h != Handle::None) {
+            const selection::Handle h = isLocked
+                ? selection::Handle::None
+                : selection::hitTestHandle(selectionRect_, event->pos());
+            if (h != selection::Handle::None) {
                 state_ = OverlayState::Resizing;
                 activeHandle_ = h;
                 startPos_ = event->pos();
@@ -565,7 +384,11 @@ void SnapOverlay::mousePressEvent(QMouseEvent* event) {
             if (selectionRect_.contains(event->pos())) {
                 if (toolbar_ && toolbar_->currentTool() != AnnotationType::None) {
                     if (toolbar_->currentTool() == AnnotationType::Text) {
-                        textInput_->startInput(event->pos(), toolbar_->currentSettings().color, toolbar_->currentSettings().fontSize);
+                        // startInput() moves a top-level window, so it needs the
+                        // position in global coordinates, not this widget's.
+                        textInput_->startInput(mapToGlobal(event->pos()),
+                                               toolbar_->currentSettings().color,
+                                               toolbar_->currentSettings().fontSize);
                         return; // stay in Selected state, let TextInputWidget handle input
                     }
                     
@@ -574,10 +397,20 @@ void SnapOverlay::mousePressEvent(QMouseEvent* event) {
                     activeAnnotation_.color = toolbar_->currentSettings().color;
                     activeAnnotation_.lineWidth = toolbar_->currentSettings().lineWidth;
                     activeAnnotation_.mosaicSize = toolbar_->currentSettings().mosaicSize;
+                    activeAnnotation_.badgeDiameter = toolbar_->currentSettings().badgeDiameter;
+                    // Claimed at press time rather than at commit time: the badge shows its
+                    // number while it is being placed, and a cancelled placement (right
+                    // click) has to give the number back -- see the RightButton branch.
+                    if (activeAnnotation_.type == AnnotationType::Number) {
+                        activeAnnotation_.number = nextNumber_;
+                    }
                     activeAnnotation_.points.clear();
                     activeAnnotation_.points.append(event->pos() - selectionRect_.normalized().topLeft());
                     
                     if (activeAnnotation_.type == AnnotationType::Mosaic) {
+                        // The first point of the stroke, so there is no segment to pass: the
+                        // default (empty = the whole annotation) is both correct and free
+                        // here, because the path is a single point at this moment.
                         annotationLayer_.updateMosaic(activeAnnotation_);
                     }
                     
@@ -629,6 +462,7 @@ void SnapOverlay::mousePressEvent(QMouseEvent* event) {
         selectionRect_ = QRect();
         hoverWindowRect_ = QRect();
         annotationLayer_.clear();
+        nextNumber_ = 1;
         state_ = OverlayState::Idle;
         // Drop any half-finished text, otherwise the editor would stay on screen
         // over an empty canvas (and keep stealing keystrokes).
@@ -660,10 +494,35 @@ void SnapOverlay::mouseMoveEvent(QMouseEvent* event) {
             } else {
                 activeAnnotation_.points[1] = relPos;
             }
-        } else if (activeAnnotation_.type == AnnotationType::Pen || activeAnnotation_.type == AnnotationType::Mosaic) {
+        } else if (activeAnnotation_.type == AnnotationType::Number) {
+            // The badge follows the cursor while the button is held, so a press places it
+            // and a press-and-nudge refines it. Committing happens on release either way,
+            // which is what makes a plain click work.
+            if (activeAnnotation_.points.isEmpty()) {
+                activeAnnotation_.points.append(relPos);
+            } else {
+                activeAnnotation_.points[0] = relPos;
+            }
+        } else if (activeAnnotation_.type == AnnotationType::Pen
+                   || activeAnnotation_.type == AnnotationType::Mosaic
+                   || activeAnnotation_.type == AnnotationType::Highlight) {
+            const QPoint previous = activeAnnotation_.points.isEmpty()
+                                        ? relPos
+                                        : activeAnnotation_.points.last();
             activeAnnotation_.points.append(relPos);
             if (activeAnnotation_.type == AnnotationType::Mosaic) {
-                annotationLayer_.updateMosaic(activeAnnotation_);
+                // Only the segment from the previous point to this one is new ink. Handing
+                // that to updateMosaic() keeps the cost proportional to what was added --
+                // the annotation's own bounding box grows with every point, so mosaicking
+                // the full path on every mouse move makes a drag across the screen rescan
+                // the screen each time.
+                //
+                // A zero-length segment would be an empty rectangle, which updateMosaic()
+                // reads as "the whole annotation"; a 1x1 rectangle is the honest way to say
+                // "just this point", and is what makes a plain click leave a pen-width dot.
+                const QRect segment = QRect(previous, relPos).normalized();
+                annotationLayer_.updateMosaic(
+                    activeAnnotation_, segment.isEmpty() ? QRect(relPos, QSize(1, 1)) : segment);
             }
         }
         update();
@@ -676,26 +535,13 @@ void SnapOverlay::mouseMoveEvent(QMouseEvent* event) {
         return;
     }
     case OverlayState::Resizing: {
-        QRect r = startRect_;
-        QPoint p = event->pos();
-        switch (activeHandle_) {
-            case Handle::TopLeft:     r.setTopLeft(p);     break;
-            case Handle::Top:         r.setTop(p.y());     break;
-            case Handle::TopRight:    r.setTopRight(p);    break;
-            case Handle::Right:       r.setRight(p.x());   break;
-            case Handle::BottomRight: r.setBottomRight(p); break;
-            case Handle::Bottom:      r.setBottom(p.y());  break;
-            case Handle::BottomLeft:  r.setBottomLeft(p);  break;
-            case Handle::Left:        r.setLeft(p.x());    break;
-            default: break;
-        }
-        selectionRect_ = r.normalized();
+        selectionRect_ = selection::resizedRect(startRect_, activeHandle_, event->pos());
         update();
         return;
     }
     case OverlayState::Dragging: {
-        if ((event->pos() - startPos_).manhattanLength() > 5) {
-            selectionRect_ = QRect(startPos_, event->pos()).normalized();
+        if (selection::isDragGesture(startPos_, event->pos())) {
+            selectionRect_ = selection::dragRect(startPos_, event->pos());
         }
         update();
         return;
@@ -723,8 +569,8 @@ void SnapOverlay::mouseMoveEvent(QMouseEvent* event) {
         // (the hover outline is repainted by hoverTimer_), so repaint just the union
         // of the old and new panel rectangles instead of the whole screen.
         if (oldMousePos.x() >= 0) {
-            QRect dirty = magnifierLayout(oldMousePos).panel
-                              .united(magnifierLayout(currentMousePos_).panel);
+            QRect dirty = panel::computeMagnifierLayout(oldMousePos, rect(), dpr_).panel
+                              .united(panel::computeMagnifierLayout(currentMousePos_, rect(), dpr_).panel);
             update(dirty.adjusted(-2, -2, 2, 2));
         } else {
             update();
@@ -762,10 +608,15 @@ void SnapOverlay::mouseReleaseEvent(QMouseEvent* event) {
             return;
         }
         if (state_ == OverlayState::Dragging) {
-            if ((event->pos() - startPos_).manhattanLength() > 5) {
+            if (selection::isDragGesture(startPos_, event->pos())) {
                 // Was a drag
-                if (selectionRect_.width() >= 4 && selectionRect_.height() >= 4) {
+                if (selectionRect_.width() >= selection::kMinimumSelectionEdge
+                    && selectionRect_.height() >= selection::kMinimumSelectionEdge) {
                     state_ = OverlayState::Selected;
+                    // A newly established selection starts its own sequence, so its first
+                    // badge is always 1. Deliberately not done for Moving/Resizing above:
+                    // those keep their annotations, whose numbers must stay consistent.
+                    nextNumber_ = 1;
                     annotationLayer_.setBaseImage(backgroundImage_, selectionRect_.normalized(), dpr_);
                     showToolbar();
                 } else {
@@ -778,6 +629,10 @@ void SnapOverlay::mouseReleaseEvent(QMouseEvent* event) {
                 if (hoverWindowRect_.isValid()) {
                     selectionRect_ = hoverWindowRect_;
                     state_ = OverlayState::Selected;
+                    // A newly established selection starts its own sequence, so its first
+                    // badge is always 1. Deliberately not done for Moving/Resizing above:
+                    // those keep their annotations, whose numbers must stay consistent.
+                    nextNumber_ = 1;
                     annotationLayer_.setBaseImage(backgroundImage_, selectionRect_.normalized(), dpr_);
                     showToolbar();
                 } else {
@@ -807,6 +662,7 @@ void SnapOverlay::keyPressEvent(QKeyEvent* event) {
     if (event->key() == Qt::Key_Escape) {
         if (!annotationLayer_.isEmpty()) {
             annotationLayer_.clear();
+            nextNumber_ = 1;
             toolbar_->setUndoEnabled(false);
             update();
         } else {
@@ -815,6 +671,12 @@ void SnapOverlay::keyPressEvent(QKeyEvent* event) {
         }
     } else if ((event->modifiers() & Qt::ControlModifier) && event->key() == Qt::Key_Z) {
         handleUndo();
+    } else if ((event->modifiers() & Qt::ControlModifier) && event->key() == Qt::Key_T) {
+        // Ctrl+T rather than a bare letter: every unmodified key is potentially text
+        // input once the text tool is armed.
+        if (state_ == OverlayState::Selected && !selectionRect_.isEmpty()) {
+            pinSelection();
+        }
     } else if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
         if (state_ == OverlayState::Selected && !selectionRect_.isEmpty()) {
             copyToClipboard();
@@ -827,88 +689,67 @@ void SnapOverlay::keyPressEvent(QKeyEvent* event) {
 }
 
 QRect SnapOverlay::physicalSelectionRect() const {
-    const QRect currentSelection = selectionRect_.normalized();
-    if (currentSelection.isEmpty()) return QRect();
+    return selection::toPhysicalRect(selectionRect_.normalized(), dpr_, backgroundImage_.rect());
+}
 
-    QRect physicalRect(
-        qRound(currentSelection.x() * dpr_),
-        qRound(currentSelection.y() * dpr_),
-        qRound(currentSelection.width() * dpr_),
-        qRound(currentSelection.height() * dpr_)
-    );
-    return physicalRect.intersected(backgroundImage_.rect());
+QImage SnapOverlay::renderSelectionImage() const {
+    const QRect physicalRect = physicalSelectionRect();
+    if (physicalRect.isEmpty()) return QImage();
+    return annotationLayer_.renderToImage(backgroundImage_.copy(physicalRect));
 }
 
 void SnapOverlay::copyToClipboard() {
-    const QRect physicalRect = physicalSelectionRect();
-    if (physicalRect.isEmpty()) return;
+    const QImage image = renderSelectionImage();
+    copyImageToClipboard(image);
 
-    const QImage basePhysical = backgroundImage_.copy(physicalRect);
-    const QImage finalImage = annotationLayer_.renderToImage(basePhysical);
-    // QPixmap::fromImage() carries the device pixel ratio over from finalImage
-    // (verified with a probe), so an extra setDevicePixelRatio() is not needed.
-    QPixmap selectedPixmap = QPixmap::fromImage(finalImage);
-    QApplication::clipboard()->setPixmap(selectedPixmap);
+    // The optional file write happens *before* the history add so the store can adopt the
+    // file instead of encoding the same image a second time. It is deliberately tied to
+    // taking a capture and not to re-copying an old one from the history menu: that file
+    // was already written when the capture was first made, and writing another copy of it
+    // would fill the save folder with duplicates of the same screenshot.
+    const QString saved = Settings::instance().saveOnCopy()
+                              ? saveImageQuietly(image, this)
+                              : QString();
+
+    // Recorded here rather than in the application because this is the only place the
+    // composed image exists; the history store is a core service, not an application
+    // concern, so reaching it directly is the shorter path.
+    HistoryStore::instance().add(image, saved);
+    emit captureCopied(saved);
 }
 
-bool SnapOverlay::saveToFile() {
-    const QRect physicalRect = physicalSelectionRect();
-    if (physicalRect.isEmpty()) return false;
+QString SnapOverlay::saveToFile() {
+    const QImage image = renderSelectionImage();
 
-    const Settings& settings = Settings::instance();
-    const bool preferJpeg = settings.saveFormat() == SaveFormat::Jpeg;
-    const QString pngFilter = text(Str::SaveFilterPng);
-    const QString jpegFilter = text(Str::SaveFilterJpeg);
-
-    QString defaultPath = settings.saveDirectory();
-    if (defaultPath.isEmpty()) {
-        defaultPath = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    // One decision point for both ways of saving. The silent path is opt-in, and it reports
+    // itself through captureSaved() because the dialog that used to be the confirmation is
+    // no longer there.
+    QString path;
+    if (Settings::instance().quietSave()) {
+        path = saveImageQuietly(image, this);
+        if (!path.isEmpty()) emit captureSaved(path);
+    } else {
+        path = saveImageWithDialog(this, image);
     }
-    if (defaultPath.isEmpty()) defaultPath = QDir::homePath();
-    defaultPath += preferJpeg ? QStringLiteral("/screenshot.jpg")
-                              : QStringLiteral("/screenshot.png");
+    if (path.isEmpty()) return path;
 
-    // The configured format is listed first so the dialog preselects it.
-    const QString filters = preferJpeg ? (jpegFilter + QStringLiteral(";;") + pngFilter)
-                                       : (pngFilter + QStringLiteral(";;") + jpegFilter);
+    // Hand the store the file that was just written instead of encoding the same image
+    // a second time; it copies it in, so the entry survives the user later tidying up
+    // wherever they saved it to.
+    HistoryStore::instance().add(image, path);
+    return path;
+}
 
-    // Parented to this overlay on purpose: the overlay is an always-on-top
-    // fullscreen tool window, so an unowned dialog could end up behind it.
-    QString selectedFilter;
-    QString filePath = QFileDialog::getSaveFileName(
-        this,
-        text(Str::SaveDialogTitle),
-        defaultPath,
-        filters,
-        &selectedFilter);
-    if (filePath.isEmpty()) return false; // cancelled
+void SnapOverlay::pinSelection() {
+    const QImage image = renderSelectionImage();
+    if (image.isNull()) return;
 
-    // Non-native dialogs do not append an extension for us.
-    if (QFileInfo(filePath).suffix().isEmpty()) {
-        // Honour the filter the user actually picked; the configured format is
-        // only the preselected default.
-        bool asJpeg = preferJpeg;
-        if (selectedFilter == pngFilter)  asJpeg = false;
-        if (selectedFilter == jpegFilter) asJpeg = true;
-        filePath += asJpeg ? QStringLiteral(".jpg") : QStringLiteral(".png");
-    }
+    // The pin is placed where the selection was, so the screenshot appears to stay
+    // put while the overlay disappears from under it.
+    emit pinRequested(image, selectionRect_.normalized().translated(globalOrigin()));
 
-    const QImage basePhysical = backgroundImage_.copy(physicalRect);
-    const QImage finalImage = annotationLayer_.renderToImage(basePhysical);
-
-    // Derive the encoder from the final extension, not from the setting: the user
-    // may have typed a different one in the dialog.
-    const bool saveAsJpeg = filePath.endsWith(QStringLiteral(".jpg"), Qt::CaseInsensitive)
-                            || filePath.endsWith(QStringLiteral(".jpeg"), Qt::CaseInsensitive);
-
-    if (!finalImage.save(filePath,
-                         saveAsJpeg ? "JPEG" : "PNG",
-                         saveAsJpeg ? settings.jpegQuality() : -1)) {
-        QMessageBox::warning(this, text(Str::SaveFailedTitle),
-                             text(Str::SaveFailedBody).arg(filePath));
-        return false; // keep the overlay so the user does not lose their work
-    }
-    return true;
+    close();
+    emit closed();
 }
 
 } // namespace qshot

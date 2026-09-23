@@ -9,6 +9,10 @@ cmake_install.cmake
 install_manifest.txt
 compile_commands.json
 
+# Deployment output: the staged folder and the installer tools/deploy.sh produces.
+# Regenerate with `bash tools/deploy.sh --build`; nothing here is source.
+dist/
+
 # Qt specifics
 *.moc
 moc_*.cpp

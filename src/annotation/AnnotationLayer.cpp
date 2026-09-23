@@ -12,11 +12,12 @@ void AnnotationLayer::clear() {
     rebuildMosaicCache();
 }
 
-void AnnotationLayer::undo() {
-    if (!annotations_.isEmpty()) {
-        annotations_.removeLast();
-        rebuildMosaicCache();
-    }
+AnnotationType AnnotationLayer::undo() {
+    if (annotations_.isEmpty()) return AnnotationType::None;
+    const AnnotationType removed = annotations_.last().type;
+    annotations_.removeLast();
+    rebuildMosaicCache();
+    return removed;
 }
 
 bool AnnotationLayer::isEmpty() const {
@@ -126,6 +127,73 @@ void AnnotationLayer::paintAnnotation(QPainter& p, const Annotation& a) {
             }
             break;
         }
+        case AnnotationType::Highlight: {
+            // A marker, not a pen: flat caps, so the stroke starts and ends exactly where
+            // the user dragged. Square caps overshoot by half the pen width at *each* end
+            // -- 9px at the default width -- which is plainly visible when the whole point
+            // of the gesture was to align the highlight with one line of text.
+            //
+            // The transparency comes from the colour's own alpha, not from a composition
+            // mode, so overlapping passes inside a single stroke stay one flat tone.
+            const qreal half = a.lineWidth / 2.0;
+            if (a.points.size() == 1) {
+                // A flat-capped zero-length line has no area at all, so a plain tap would
+                // leave no mark and the tool would look broken. Paint the cap explicitly,
+                // as a round dot -- which is also what a real marker does when touched to
+                // paper.
+                p.setPen(Qt::NoPen);
+                p.setBrush(a.color);
+                p.drawEllipse(QPointF(a.points.first()), half, half);
+                break;
+            }
+            QPainterPath marker;
+            marker.moveTo(a.points.first());
+            for (int i = 1; i < a.points.size(); ++i) {
+                marker.lineTo(a.points[i]);
+            }
+            p.setPen(QPen(a.color, a.lineWidth, Qt::SolidLine, Qt::FlatCap, Qt::RoundJoin));
+            p.drawPath(marker);
+            break;
+        }
+        case AnnotationType::Number: {
+            // A filled disc with a contrasting ring and a centred digit.
+            //
+            // The ring is not decoration: the badge lands on an arbitrary screenshot, so a
+            // red disc on a red region would disappear without it, and a white digit on a
+            // white region likewise. A dark ring around the disc plus a dark halo around
+            // the glyph keeps both readable on any background.
+            const int d = qMax(8, a.badgeDiameter);
+            const QRectF disc(a.points.first().x() - d / 2.0, a.points.first().y() - d / 2.0,
+                              d, d);
+
+            p.setPen(QPen(QColor(0, 0, 0, 90), qMax(1.0, d / 16.0)));
+            p.setBrush(a.color);
+            p.drawEllipse(disc);
+
+            const QString label = QString::number(a.number > 0 ? a.number : 1);
+            QFont font = p.font();
+            // Derived from the disc rather than from a fixed point size, so the digit
+            // scales with the badge and never overflows it.
+            font.setPixelSize(qMax(8, qRound(d * 0.58)));
+            font.setBold(true);
+            p.setFont(font);
+
+            // Two passes: a dark halo underneath, then the glyph. Without the halo a
+            // white digit on a light background is invisible; with it, one pass is enough
+            // for both light and dark backgrounds.
+            QRectF textRect = disc.adjusted(-d, -d, d, d);
+            p.setPen(QColor(0, 0, 0, 130));
+            for (int dx = -1; dx <= 1; ++dx) {
+                for (int dy = -1; dy <= 1; ++dy) {
+                    if (dx == 0 && dy == 0) continue;
+                    p.drawText(textRect.translated(dx, dy),
+                               Qt::AlignCenter, label);
+                }
+            }
+            p.setPen(Qt::white);
+            p.drawText(textRect, Qt::AlignCenter, label);
+            break;
+        }
         case AnnotationType::Mosaic:
         case AnnotationType::None:
             break;
@@ -193,7 +261,7 @@ void AnnotationLayer::rebuildMosaicCache() {
     }
 }
 
-void AnnotationLayer::updateMosaic(const Annotation& a) {
+void AnnotationLayer::updateMosaic(const Annotation& a, const QRect& logicalDirty) {
     if (a.type != AnnotationType::Mosaic || a.points.isEmpty() || baseImage_.isNull()) return;
 
     if (mosaicLayer_.isNull()) {
@@ -219,7 +287,10 @@ void AnnotationLayer::updateMosaic(const Annotation& a) {
         path.lineTo(a.points[i]);
     }
     
-    QRect logicalBounding = path.boundingRect().toAlignedRect();
+    // Either the whole stroke or just the part the caller says is new. See the header for
+    // why clipping to the increment cannot change the result.
+    QRect logicalBounding = logicalDirty.isEmpty() ? path.boundingRect().toAlignedRect()
+                                                   : logicalDirty;
     logicalBounding.adjust(-a.mosaicSize, -a.mosaicSize, a.mosaicSize, a.mosaicSize);
     
     QRect physicalBounding(
@@ -242,7 +313,14 @@ void AnnotationLayer::updateMosaic(const Annotation& a) {
     
     QPainter p(&strokeMask);
     p.setRenderHint(QPainter::Antialiasing, false);
-    p.translate(-logicalBounding.topLeft());
+    // Translate by the *physical* origin converted back to logical, not by the logical
+    // origin. The two are the same point only while physicalBounding is unclipped: the
+    // rectangle is intersected with the image above, so a stroke that reaches the selection
+    // edge moves its own mask's origin inward -- and translating by logicalBounding then
+    // misplaces every pixel by exactly that clip amount. A tap in the top-left corner had
+    // its mosaic pushed a whole block diagonally. Dividing back by dpr_ is exact, and
+    // collapses to the old expression whenever nothing was clipped.
+    p.translate(-physicalBounding.x() / dpr_, -physicalBounding.y() / dpr_);
     QPen pen(Qt::white, a.mosaicSize, Qt::SolidLine, Qt::SquareCap, Qt::RoundJoin);
     p.setPen(pen);
     p.drawPath(path);

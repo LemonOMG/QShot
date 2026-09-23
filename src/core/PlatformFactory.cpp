@@ -5,6 +5,7 @@
 #include "../platform/windows/WinGlobalHotkey.h"
 #include "../platform/windows/WinWindowDetector.h"
 #include "../platform/windows/WinAutoStart.h"
+#include "../platform/windows/WinSingleInstance.h"
 #endif
 
 namespace qshot {
@@ -36,6 +37,14 @@ std::unique_ptr<IWindowDetector> PlatformFactory::createWindowDetector() {
 std::unique_ptr<IAutoStart> PlatformFactory::createAutoStart() {
 #ifdef Q_OS_WIN
     return std::make_unique<WinAutoStart>();
+#else
+    return nullptr;
+#endif
+}
+
+std::unique_ptr<ISingleInstance> PlatformFactory::createSingleInstance() {
+#ifdef Q_OS_WIN
+    return std::make_unique<WinSingleInstance>();
 #else
     return nullptr;
 #endif

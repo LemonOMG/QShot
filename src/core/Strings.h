@@ -44,7 +44,30 @@ enum class Str {
     ToolbarUndo,
     ToolbarCopy,
     ToolbarSave,
+    ToolbarPin,
     ToolbarCancel,
+
+    // --- pinned image window ----------------------------------------------
+    PinMenuCopy,
+    PinMenuSaveAs,
+    PinMenuClose,
+
+    // --- capture history ---------------------------------------------------
+    TrayHistory,
+    TrayHistoryEmpty,
+    TrayHistoryClear,
+    HistoryCopy,
+    HistorySaveAs,
+    HistoryPin,
+    HistoryDelete,
+    HistoryClearTitle,
+    HistoryClearBody,
+    HistoryCopiedTitle,
+    HistoryCopiedBody,
+    GroupHistory,
+    HistoryEnabledLabel,
+    HistoryLimitLabel,
+    HistoryNotifyLabel,
 
     // --- saving ------------------------------------------------------------
     SaveDialogTitle,
@@ -52,6 +75,15 @@ enum class Str {
     SaveFilterJpeg,
     SaveFailedTitle,
     SaveFailedBody,
+    SaveQuietLabel,
+    SaveOnCopyLabel,
+    SavedTitle,
+    SavedBody,
+    HistoryCopiedSavedBody,
+
+    // --- startup -----------------------------------------------------------
+    AlreadyRunningTitle,
+    AlreadyRunningBody,
 
     // --- settings dialog ---------------------------------------------------
     SettingsTitle,

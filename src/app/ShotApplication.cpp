@@ -5,33 +5,42 @@
 #include <QApplication>
 #include <QPixmap>
 
+#include "core/HistoryStore.h"
 #include "core/PlatformFactory.h"
 #include "core/Settings.h"
 #include "core/Strings.h"
 #include "overlay/SnapOverlay.h"
+#include "pin/PinWindow.h"
+#include "ui/HistoryMenu.h"
 #include "ui/SettingsDialog.h"
+#include <QCursor>
 #include <QScreen>
 
 #include <QTimer>
 
 namespace qshot {
 
+namespace {
+/// Delay between automatic hotkey-registration attempts. Long enough not to hammer the
+/// system while the conflicting process is still starting up.
+constexpr int kHotkeyRetryIntervalMs = 5000;
+} // namespace
+
 ShotApplication::ShotApplication(QObject* parent)
     : QObject(parent)
     , trayIcon_(nullptr)
-    , trayMenu_(nullptr)
     , captureAction_(nullptr)
     , retryAction_(nullptr)
     , settingsAction_(nullptr)
     , quitAction_(nullptr)
+    , historyMenu_(nullptr)
     , hotkeyRetryTimer_(new QTimer(this))
-    , globalHotkey_(nullptr) 
 {
     // Qt's own catalogues (QMessageBox buttons, the line-edit context menu) have
     // to follow our language selection too.
     installQtTranslations();
 
-    connect(hotkeyRetryTimer_, &QTimer::timeout, this, &ShotApplication::onRetryHotkey);
+    connect(hotkeyRetryTimer_, &QTimer::timeout, this, &ShotApplication::onHotkeyRetryTimeout);
 
     // The settings dialog only writes Settings. The side effects that need the
     // rest of the application are wired up here, so the dialog stays free of any
@@ -52,36 +61,61 @@ ShotApplication::ShotApplication(QObject* parent)
 }
 
 ShotApplication::~ShotApplication() {
-    if (globalHotkey_) {
-        delete globalHotkey_;
-        globalHotkey_ = nullptr;
-    }
+    // globalHotkey_ deletes itself: it is a unique_ptr member with no QObject parent, so it
+    // is released right after this body and before ~QObject. Deleting it here as well used
+    // to be the second half of a redundant pair -- the factory was handed `this` as a
+    // parent, so the pointer was owned in two places at once.
     if (trayIcon_) {
         trayIcon_->hide();
+        // Detach before `trayMenu_` is destroyed. QSystemTrayIcon::setContextMenu() does
+        // not take ownership, and the tray icon outlives every member: it is a QObject
+        // child of `this`, so it is deleted by ~QObject *after* the members are gone.
+        // Leaving the pointer in place would have the icon's destructor looking at freed
+        // memory.
+        trayIcon_->setContextMenu(nullptr);
     }
+    // trayMenu_ is a unique_ptr, so it is released here rather than leaked. It used to be a
+    // bare `new QMenu()` with no parent -- QMenu takes a QWidget parent, not a QObject one,
+    // so there was nowhere to hand it to.
 }
 
 void ShotApplication::initTrayIcon() {
     trayIcon_ = new QSystemTrayIcon(this);
-    
-    // Create a temporary icon until resources are added
-    QPixmap pixmap(32, 32);
-    pixmap.fill(Qt::blue);
-    trayIcon_->setIcon(QIcon(pixmap));
 
-    trayMenu_ = new QMenu();
+    // From the embedded resource, not a file on disk. The .ico carries eight sizes and
+    // Windows picks the right one per context -- the tray wants 16px, alt-tab 32, Explorer
+    // 256 -- so a single scaled pixmap would look soft in most of them.
+    trayIcon_->setIcon(QIcon(QStringLiteral(":/icons/qshot.ico")));
+
+    // Owned by the unique_ptr member, not by a parent: QMenu takes a QWidget parent and
+    // there is no widget to give it -- `this` is a QObject. A bare `new QMenu()` leaked.
+    trayMenu_ = std::make_unique<QMenu>();
 
     captureAction_ = new QAction(this);
     connect(captureAction_, &QAction::triggered, this, &ShotApplication::onCaptureTriggered);
     trayMenu_->addAction(captureAction_);
 
     retryAction_ = new QAction(this);
-    connect(retryAction_, &QAction::triggered, this, &ShotApplication::onRetryHotkey);
+    // The tray's retry is a user action, so it goes through registerGlobalHotkeys() rather
+    // than the timer's attempt path: only the automatic loop spends the attempt budget.
+    connect(retryAction_, &QAction::triggered, this, &ShotApplication::registerGlobalHotkeys);
     trayMenu_->addAction(retryAction_);
 
     settingsAction_ = new QAction(this);
     connect(settingsAction_, &QAction::triggered, this, &ShotApplication::onSettingsTriggered);
     trayMenu_->addAction(settingsAction_);
+
+    // Above the settings entry and below capture: it is a way of getting a capture back,
+    // so it belongs with the capture actions rather than with the configuration.
+    historyMenu_ = new HistoryMenu(HistoryStore::instance(), trayMenu_.get());
+    connect(historyMenu_, &HistoryMenu::pinRequested,
+            this, &ShotApplication::onHistoryPinRequested);
+    // History copies carry no saved path on purpose: the capture was written when it was
+    // first taken, so "also save when copying" must not drop a second identical file every
+    // time the user re-copies an old capture from this menu.
+    connect(historyMenu_, &HistoryMenu::copied, this,
+            [this]() { onCaptureCopied(QString()); });
+    trayMenu_->addMenu(historyMenu_);
 
     trayMenu_->addSeparator();
 
@@ -91,7 +125,7 @@ void ShotApplication::initTrayIcon() {
 
     retranslate();
 
-    trayIcon_->setContextMenu(trayMenu_);
+    trayIcon_->setContextMenu(trayMenu_.get());
     trayIcon_->show();
 }
 
@@ -102,6 +136,9 @@ void ShotApplication::retranslate() {
     if (retryAction_)    retryAction_->setText(text(Str::TrayRetryHotkey));
     if (settingsAction_) settingsAction_->setText(text(Str::TraySettings));
     if (quitAction_)     quitAction_->setText(text(Str::TrayQuit));
+    // Only the submenu's own title: its entries are generated in rebuild(), which reads
+    // the current language every time the menu opens, so they cannot go stale.
+    if (historyMenu_)    historyMenu_->setTitle(text(Str::TrayHistory));
 
     // The capture entry embeds the current hotkey, so let updateTrayStatus()
     // rebuild it rather than duplicating that logic here.
@@ -130,8 +167,17 @@ void ShotApplication::updateTrayStatus(bool registered) {
 }
 
 void ShotApplication::registerGlobalHotkeys() {
+    // Every caller of this one is a deliberate act -- startup, a hotkey change, or the
+    // tray's retry entry -- so the attempt budget starts over. Only the timer's own path
+    // (onHotkeyRetryTimeout) spends it.
+    hotkeyRetriesLeft_ = kMaxHotkeyRetries;
+    attemptHotkeyRegistration();
+}
+
+void ShotApplication::attemptHotkeyRegistration() {
     if (!globalHotkey_) {
-        globalHotkey_ = PlatformFactory::createGlobalHotkey(this);
+        // No parent: the unique_ptr owns it (see the header).
+        globalHotkey_.reset(PlatformFactory::createGlobalHotkey());
 
         // The factory returns nullptr on platforms without an implementation.
         // Without this guard the very next call would dereference it.
@@ -141,45 +187,57 @@ void ShotApplication::registerGlobalHotkeys() {
             return;
         }
 
-        connect(globalHotkey_, &IGlobalHotkey::hotkeyPressed,
+        connect(globalHotkey_.get(), &IGlobalHotkey::hotkeyPressed,
                 this, &ShotApplication::onCaptureTriggered);
     }
 
     const QKeySequence hotkey = Settings::instance().hotkey();
     const bool success = globalHotkey_->registerHotkey(hotkey);
     updateTrayStatus(success);
-    
-    if (!success) {
-        qWarning() << "Failed to register global hotkey" << hotkey.toString()
-                   << "- retrying in 5 seconds.";
-        // Only show the message the first time it fails; a retry loop would
-        // otherwise pop a balloon every 5 seconds.
-        if (trayIcon_ && !hotkeyRetryTimer_->isActive()) {
-            trayIcon_->showMessage(
-                text(Str::HotkeyConflictTitle),
-                text(Str::HotkeyConflictBody)
-                    .arg(hotkey.toString(QKeySequence::NativeText)),
-                QSystemTrayIcon::Warning,
-                5000);
-        }
-        hotkeyRetryTimer_->start(5000); // Retry every 5 seconds
-    } else {
-        qDebug() << "Global hotkey registered successfully:" << hotkey.toString();
+
+    if (success) {
         hotkeyRetryTimer_->stop();
+        return;
     }
+
+    if (hotkeyRetriesLeft_ <= 0) {
+        // Out of automatic attempts. The tray menu already offers a manual retry and the
+        // tooltip already says the hotkey is not registered, so the only thing left is to
+        // stop -- the previous behaviour was to keep trying every 5 seconds forever, which
+        // for the common cause of this failure (another process holding the hotkey) means
+        // an endless stream of log lines and timer wakeups for a condition that cannot
+        // resolve itself.
+        qWarning() << "Failed to register global hotkey" << hotkey.toString()
+                   << "- giving up after" << kMaxHotkeyRetries
+                   << "automatic attempts; the tray menu can retry.";
+        return;
+    }
+
+    --hotkeyRetriesLeft_;
+    qWarning() << "Failed to register global hotkey" << hotkey.toString()
+               << "- retrying in" << (kHotkeyRetryIntervalMs / 1000) << "seconds ("
+               << hotkeyRetriesLeft_ << "attempts left )";
+
+    // Only show the balloon on the first failure; the loop would otherwise pop one every
+    // 5 seconds.
+    if (trayIcon_ && !hotkeyRetryTimer_->isActive()) {
+        trayIcon_->showMessage(
+            text(Str::HotkeyConflictTitle),
+            text(Str::HotkeyConflictBody)
+                .arg(hotkey.toString(QKeySequence::NativeText)),
+            QSystemTrayIcon::Warning,
+            5000);
+    }
+    hotkeyRetryTimer_->start(kHotkeyRetryIntervalMs);
 }
 
-void ShotApplication::onRetryHotkey() {
-    qDebug() << "Manually retrying hotkey registration...";
-    registerGlobalHotkeys();
+void ShotApplication::onHotkeyRetryTimeout() {
+    attemptHotkeyRegistration();
 }
 
 void ShotApplication::onCaptureTriggered() {
-    qDebug() << "Capture triggered!";
-    
     // 如果已经有处于激活状态的截图叠加层，再次按下快捷键则退出当前截图（类似于 Toggle 机制）
     if (!currentOverlays_.isEmpty()) {
-        qDebug() << "Overlays already active, closing them.";
         for (auto& overlay : currentOverlays_) {
             if (overlay) overlay->close();
         }
@@ -192,6 +250,15 @@ void ShotApplication::onCaptureTriggered() {
         qWarning() << "No screen capture implementation for this platform.";
         return;
     }
+
+    // The overlay covering the screen the cursor is on is the one the user is looking
+    // at, and activation is the only thing that decides where key events go (Esc is
+    // already global: it closes this overlay, and the `closed` handler above takes the
+    // rest down with it). Picking whichever overlay the loop happened to visit last
+    // would be arbitrary -- on a multi-screen setup that is simply the last screen.
+    const QPoint cursorPos = QCursor::pos();
+    SnapOverlay* onCursorScreen = nullptr;
+    SnapOverlay* firstOverlay = nullptr;
 
     for (QScreen* screen : QGuiApplication::screens()) {
         QPixmap screenPixmap = capture->captureScreen(screen, Settings::instance().includeCursor());
@@ -210,14 +277,73 @@ void ShotApplication::onCaptureTriggered() {
             currentOverlays_.clear();
         });
         
+        connect(overlay, &SnapOverlay::pinRequested, this, &ShotApplication::onPinRequested);
+        connect(overlay, &SnapOverlay::captureCopied, this, &ShotApplication::onCaptureCopied);
+        connect(overlay, &SnapOverlay::captureSaved, this, &ShotApplication::onCaptureSaved);
+        
         // Geometry is already applied by the SnapOverlay constructor.
         overlay->show();
-        // Showing a top-level window does not guarantee it becomes the active one,
-        // and an inactive overlay never receives Esc / Enter / Ctrl+Z. With several
-        // screens the last one shown ends up active (see the multi-screen notes in
-        // docs/CODE_REVIEW_ROUND3.md).
-        overlay->activateWindow();
+
+        if (!firstOverlay) firstOverlay = overlay;
+        if (screen->geometry().contains(cursorPos)) onCursorScreen = overlay;
     }
+
+    // Showing a top-level window does not guarantee it becomes the active one, and an
+    // inactive overlay never receives Esc / Enter / Ctrl+Z. Prefer the screen the
+    // cursor is on; fall back to the first one so something is always activated.
+    SnapOverlay* const focusTarget = onCursorScreen ? onCursorScreen : firstOverlay;
+    if (focusTarget) {
+        focusTarget->activateWindow();
+    }
+}
+
+void ShotApplication::onPinRequested(const QImage& image, const QRect& globalRect) {
+    if (image.isNull()) return;
+
+    // Parentless on purpose: the pin has to outlive the overlay, which is closing
+    // right now. It is created with WA_DeleteOnClose, so there is nothing to track
+    // here -- and setQuitOnLastWindowClosed(false) in main.cpp means having no
+    // windows at all is already a normal state for this tray application.
+    PinWindow* pin = new PinWindow(image);
+    pin->showAt(globalRect.topLeft());
+}
+
+void ShotApplication::onHistoryPinRequested(const QImage& image) {
+    if (image.isNull()) return;
+
+    // Same ownership as onPinRequested(): parentless, self-deleting.
+    PinWindow* pin = new PinWindow(image);
+    // No originating selection here, so the pin has to find its own place.
+    pin->showCentredOnCursorScreen();
+}
+
+void ShotApplication::onCaptureCopied(const QString& savedPath) {
+    if (!trayIcon_) return;
+
+    // Copying closes the overlay and shows nothing else, so this is the only feedback the
+    // user gets. Deliberately not shown after a *dialog* save: the dialog already confirmed
+    // that, and a balloon on top of it would be noise. A silent save is the opposite case
+    // -- the balloon *is* the confirmation -- so it is shown regardless of the copy
+    // notification setting, and it says both things rather than popping two balloons.
+    if (!savedPath.isEmpty()) {
+        trayIcon_->showMessage(text(Str::HistoryCopiedTitle),
+                               text(Str::HistoryCopiedSavedBody).arg(savedPath),
+                               QSystemTrayIcon::Information, 2500);
+        return;
+    }
+
+    if (!Settings::instance().historyNotifyOnCopy()) return;
+    trayIcon_->showMessage(text(Str::HistoryCopiedTitle), text(Str::HistoryCopiedBody),
+                           QSystemTrayIcon::Information, 2500);
+}
+
+void ShotApplication::onCaptureSaved(const QString& path) {
+    if (!trayIcon_ || path.isEmpty()) return;
+
+    // Unconditional, unlike the copy notification: with the file dialog switched off this
+    // balloon is the only evidence the save happened at all.
+    trayIcon_->showMessage(text(Str::SavedTitle), text(Str::SavedBody).arg(path),
+                           QSystemTrayIcon::Information, 2500);
 }
 
 void ShotApplication::onSettingsTriggered() {
@@ -248,7 +374,6 @@ void ShotApplication::applyAutoStart() {
 }
 
 void ShotApplication::onQuitTriggered() {
-    qDebug() << "Quit triggered!";
     QApplication::quit();
 }
 

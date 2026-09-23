@@ -63,7 +63,8 @@ QRect WinWindowDetector::windowRectAt(const QPoint& logicalPos) const {
     
     EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR hMon, HDC, LPRECT, LPARAM lParam) -> BOOL {
         EnumData* d = reinterpret_cast<EnumData*>(lParam);
-        MONITORINFOEXW mi = { sizeof(MONITORINFOEXW) };
+        MONITORINFOEXW mi = {};
+        mi.cbSize = sizeof(MONITORINFOEXW);
         if (GetMonitorInfoW(hMon, (LPMONITORINFO)&mi)) {
             if (QString::fromWCharArray(mi.szDevice) == d->name) {
                 d->mi = mi;
@@ -99,7 +100,8 @@ QRect WinWindowDetector::windowRectAt(const QPoint& logicalPos) const {
     }
 
     HMONITOR hMon = MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST);
-    MONITORINFOEXW mi = { sizeof(MONITORINFOEXW) };
+    MONITORINFOEXW mi = {};
+    mi.cbSize = sizeof(MONITORINFOEXW);
     if (!GetMonitorInfoW(hMon, (LPMONITORINFO)&mi)) {
         return QRect();
     }

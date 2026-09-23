@@ -20,6 +20,12 @@ enum class SaveFormat {
     Jpeg
 };
 
+/// Bounds for the capture-history size. In the header because the settings dialog's
+/// spin box and the store's eviction both have to agree on them.
+constexpr int kMinHistoryLimit = 1;
+constexpr int kMaxHistoryLimit = 200;
+constexpr int kDefaultHistoryLimit = 20;
+
 /**
  * Application settings, persisted with QSettings.
  *
@@ -63,6 +69,28 @@ public:
     int jpegQuality() const { return jpegQuality_; }
     void setJpegQuality(int quality);
 
+    /**
+     * When on, the capture toolbar's Save writes straight into saveDirectory() under a
+     * generated name instead of opening the file dialog.
+     *
+     * The two "Save As" entries -- the pinned window's context menu and the history
+     * menu -- deliberately ignore this. Choosing a location is what "Save As" means;
+     * making it silent would leave the user with no way to put a capture anywhere else.
+     */
+    bool quietSave() const { return quietSave_; }
+    void setQuietSave(bool on);
+
+    /**
+     * When on, a capture that is copied to the clipboard is also written to
+     * saveDirectory(), so the common case (capture, paste, done) leaves a file behind
+     * without a second action.
+     *
+     * Applies to the capture being taken, not to re-copying an old one from the history
+     * menu: that file was already written when the capture was first made.
+     */
+    bool saveOnCopy() const { return saveOnCopy_; }
+    void setSaveOnCopy(bool on);
+
     // --- capture ------------------------------------------------------------
     bool includeCursor() const { return includeCursor_; }
     void setIncludeCursor(bool on);
@@ -71,6 +99,19 @@ public:
     /// When on, the colour / thickness picked in the toolbar survives a restart.
     bool rememberToolSettings() const { return rememberToolSettings_; }
     void setRememberToolSettings(bool on);
+
+    // --- history ------------------------------------------------------------
+    /// When off, captures are still copied and saved but nothing is recorded.
+    bool historyEnabled() const { return historyEnabled_; }
+    void setHistoryEnabled(bool on);
+
+    /// How many captures to keep. Clamped to [kMinHistoryLimit, kMaxHistoryLimit].
+    int historyLimit() const { return historyLimit_; }
+    void setHistoryLimit(int limit);
+
+    /// Whether to show a tray notification after a capture is copied to the clipboard.
+    bool historyNotifyOnCopy() const { return historyNotifyOnCopy_; }
+    void setHistoryNotifyOnCopy(bool on);
 
     /// Never returns a value outside the shipped defaults, even if the stored
     /// entry is missing or the setting above is off.
@@ -100,8 +141,13 @@ private:
     QString saveDirectory_;
     SaveFormat saveFormat_ = SaveFormat::Png;
     int jpegQuality_ = 92;
+    bool quietSave_ = false;
+    bool saveOnCopy_ = false;
     bool includeCursor_ = false;
     bool rememberToolSettings_ = true;
+    bool historyEnabled_ = true;
+    int historyLimit_ = kDefaultHistoryLimit;
+    bool historyNotifyOnCopy_ = true;
     QMap<AnnotationType, ToolSettings> toolSettings_;
 };
 

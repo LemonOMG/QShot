@@ -11,7 +11,11 @@ public:
     explicit TextInputWidget(QWidget* parent = nullptr);
     ~TextInputWidget() override;
 
-    void startInput(const QPoint& pos, const QColor& color, int fontSize);
+    // `globalPos` is in global desktop coordinates, not the parent overlay's space.
+    // The editor is a top-level window, so move() interprets its argument globally;
+    // feeding it a screen-local point silently places the box on the primary
+    // monitor whenever the overlay is showing on any other one.
+    void startInput(const QPoint& globalPos, const QColor& color, int fontSize);
     // Discard any in-progress input and hide the editor (used when the overlay
     // resets, so a half-finished text box cannot linger on an empty canvas).
     void cancelInput();

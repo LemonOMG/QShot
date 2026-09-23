@@ -4,6 +4,7 @@
 #include <QPainterPath>
 #include <QDebug>
 
+#include "ToolbarIcons.h"
 #include "../core/Settings.h"
 #include "../core/Strings.h"
 
@@ -22,27 +23,35 @@ static const QVector<QColor> kColors = {
 static const QVector<int> kLineWeights = { 2, 4, 6 }; // Thin, Medium, Thick
 static const QVector<int> kMosaicSizes = { 8, 16, 24 };
 static const QVector<int> kFontSizes = { 14, 18, 24 };
+// A marker is used at a much larger scale than a pen, so it gets its own ladder rather
+// than sharing kLineWeights -- a 6px highlighter is too thin to highlight anything.
+static const QVector<int> kMarkerWidths = { 10, 18, 28 };
+static const QVector<int> kBadgeSizes = { 20, 28, 38 };
 
 struct ButtonDef {
     AnnotationType type;
     QString action; // If empty, it's a tool. If type is None and action is not empty, it's an action.
-    QString iconName; // Geometry to draw; empty for action buttons, which are labelled with text.
-    Str label = Str::Count; // Translated caption for action buttons; Count when the button draws an icon.
+    // Translated caption for action buttons; Count when the button draws a tool glyph.
+    // The glyph itself is chosen by `type` -- see toolbaricons::paintTool.
+    Str label = Str::Count;
     bool isSeparator = false;
 };
 
 static const QVector<ButtonDef> kButtons = {
-    { AnnotationType::Rectangle, "", "Rect" },
-    { AnnotationType::Ellipse, "", "Ellp" },
-    { AnnotationType::Arrow, "", "Arrw" },
-    { AnnotationType::Pen, "", "Pen" },
-    { AnnotationType::Mosaic, "", "Mosc" },
-    { AnnotationType::Text, "", "Text" },
-    { AnnotationType::None, "", "", Str::Count, true }, // Separator
-    { AnnotationType::None, "Undo", "", Str::ToolbarUndo },
-    { AnnotationType::None, "Copy", "", Str::ToolbarCopy },
-    { AnnotationType::None, "Save", "", Str::ToolbarSave },
-    { AnnotationType::None, "Cancel", "", Str::ToolbarCancel }
+    { AnnotationType::Rectangle, "" },
+    { AnnotationType::Ellipse, "" },
+    { AnnotationType::Arrow, "" },
+    { AnnotationType::Pen, "" },
+    { AnnotationType::Mosaic, "" },
+    { AnnotationType::Text, "" },
+    { AnnotationType::Number, "" },
+    { AnnotationType::Highlight, "" },
+    { AnnotationType::None, "", Str::Count, true }, // Separator
+    { AnnotationType::None, "Undo", Str::ToolbarUndo },
+    { AnnotationType::None, "Copy", Str::ToolbarCopy },
+    { AnnotationType::None, "Save", Str::ToolbarSave },
+    { AnnotationType::None, "Pin", Str::ToolbarPin },
+    { AnnotationType::None, "Cancel", Str::ToolbarCancel }
 };
 
 // ----------------------------------------------------------------------------
@@ -97,6 +106,8 @@ public:
     QVector<int> currentSizes() const {
         if (currentTool_ == AnnotationType::Mosaic) return kMosaicSizes;
         if (currentTool_ == AnnotationType::Text) return kFontSizes;
+        if (currentTool_ == AnnotationType::Number) return kBadgeSizes;
+        if (currentTool_ == AnnotationType::Highlight) return kMarkerWidths;
         return kLineWeights;
     }
 
@@ -224,13 +235,22 @@ private:
             return;
         }
 
+        if (currentTool_ == AnnotationType::Highlight) {
+            // A marker is a band, so show a band. A circle would read as a pen width and
+            // would not distinguish this tool from the freehand pen sitting next to it.
+            const qreal h = 3 + index * 3;
+            p.drawRect(QRectF(chip.left() + 3, chip.center().y() - h / 2.0,
+                              chip.width() - 6, h));
+            return;
+        }
+
         const qreal side = 6 + index * 5;
         const QRectF glyph(chip.center().x() - side / 2.0, chip.center().y() - side / 2.0,
                            side, side);
         if (currentTool_ == AnnotationType::Mosaic) {
             p.drawRect(glyph);      // square for mosaic blocks
         } else {
-            p.drawEllipse(glyph);   // circle for stroke width
+            p.drawEllipse(glyph);   // circle for stroke width and badge diameter
         }
     }
 
@@ -269,7 +289,8 @@ ToolbarWidget::ToolbarWidget(QWidget* parent)
     // defaults, so this is correct whether or not anything has been stored yet.
     const AnnotationType tools[] = {
         AnnotationType::Rectangle, AnnotationType::Ellipse, AnnotationType::Arrow,
-        AnnotationType::Pen, AnnotationType::Mosaic, AnnotationType::Text
+        AnnotationType::Pen, AnnotationType::Mosaic, AnnotationType::Text,
+        AnnotationType::Number, AnnotationType::Highlight
     };
     for (AnnotationType type : tools) {
         toolSettings_[type] = Settings::instance().toolSettings(type);
@@ -289,6 +310,8 @@ ToolbarWidget::ToolbarWidget(QWidget* parent)
                 toolSettings_[currentTool_].mosaicSize = s;
             } else if (currentTool_ == AnnotationType::Text) {
                 toolSettings_[currentTool_].fontSize = s;
+            } else if (currentTool_ == AnnotationType::Number) {
+                toolSettings_[currentTool_].badgeDiameter = s;
             } else {
                 toolSettings_[currentTool_].lineWidth = s;
             }
@@ -311,15 +334,19 @@ ToolSettings ToolbarWidget::currentSettings() const {
     return ToolSettings();
 }
 
-void ToolbarWidget::updatePosition(const QRect& selectionRect, const QRect& screenRect) {
-    int targetX = selectionRect.center().x() - width() / 2;
-    int targetY = selectionRect.bottom() + 8;
+void ToolbarWidget::updatePosition(const QRect& globalSelectionRect, const QRect& screenRect) {
+    // Kept for showSubPanel(), which runs at the end of this function and needs the
+    // same bounds.
+    screenRect_ = screenRect;
+
+    int targetX = globalSelectionRect.center().x() - width() / 2;
+    int targetY = globalSelectionRect.bottom() + 8;
 
     // Check bottom boundary
     if (targetY + height() > screenRect.bottom()) {
-        targetY = selectionRect.top() - height() - 8;
+        targetY = globalSelectionRect.top() - height() - 8;
         if (targetY < screenRect.top()) {
-            targetY = selectionRect.bottom() - height(); // Inside selection if really no space
+            targetY = globalSelectionRect.bottom() - height(); // Inside selection if really no space
         }
     }
 
@@ -340,17 +367,22 @@ void ToolbarWidget::showSubPanel() {
     int currentSize = currentSettings().lineWidth;
     if (currentTool_ == AnnotationType::Mosaic) currentSize = currentSettings().mosaicSize;
     if (currentTool_ == AnnotationType::Text) currentSize = currentSettings().fontSize;
+    if (currentTool_ == AnnotationType::Number) currentSize = currentSettings().badgeDiameter;
 
     // Update before positioning: a tool change resizes the panel, and the
     // centring below depends on its final width.
     subPanel_->updateSelection(currentTool_, currentSettings().color, currentSize);
 
-    // Position subpanel above toolbar
+    // Position subpanel above toolbar. x()/y() are already global, because the
+    // toolbar is a top-level window, so the panel is placed in the same space.
     int targetX = x() + width() / 2 - subPanel_->width() / 2;
     int targetY = y() - subPanel_->height() - 8;
 
-    // Quick boundary check
-    if (targetY < 0) {
+    // Keep it on the screen the toolbar is on. Testing against 0 instead of the
+    // screen's own top edge is only correct while that screen starts at y == 0,
+    // which is true for the primary monitor and nothing else. A null screenRect_
+    // (updatePosition never called) falls back to 0, i.e. the old behaviour.
+    if (targetY < screenRect_.top()) {
         targetY = y() + height() + 8; // move below if no space
     }
 
@@ -402,7 +434,7 @@ void ToolbarWidget::paintEvent(QPaintEvent* event) {
             isDisabled = true;
         }
         
-        drawButton(p, btnRect, b.type, b.iconName,
+        drawButton(p, btnRect, b.type,
                    b.label == Str::Count ? QString() : text(b.label),
                    isHovered, isSelected, isDisabled);
         
@@ -411,7 +443,7 @@ void ToolbarWidget::paintEvent(QPaintEvent* event) {
 }
 
 void ToolbarWidget::drawButton(QPainter& p, const QRect& rect, AnnotationType toolType,
-                               const QString& iconName, const QString& label,
+                               const QString& label,
                                bool isHovered, bool isSelected, bool isDisabled) {
     if (isSelected) {
         p.setBrush(QColor(255, 255, 255, 40));
@@ -428,45 +460,22 @@ void ToolbarWidget::drawButton(QPainter& p, const QRect& rect, AnnotationType to
         iconColor = toolSettings_[toolType].color; // Icon assumes current color when selected
     }
 
-    p.setPen(QPen(iconColor, 2));
-    p.setBrush(Qt::NoBrush);
+    // The eight tool glyphs come from the shared icon set, which owns the stroke weight, the
+    // optical box and the rule that no two glyphs may read alike.
+    if (toolbaricons::paintTool(p, toolType, rect.adjusted(6, 6, -6, -6), iconColor)) {
+        return;
+    }
 
-    QRect inner = rect.adjusted(6, 6, -6, -6);
-
-    // Geometry placeholders
-    if (iconName == "Rect") {
-        p.drawRect(inner);
-    } else if (iconName == "Ellp") {
-        p.drawEllipse(inner);
-    } else if (iconName == "Arrw") {
-        p.drawLine(inner.bottomLeft(), inner.topRight());
-        p.drawLine(inner.topRight(), inner.topRight() + QPoint(-4, 0));
-        p.drawLine(inner.topRight(), inner.topRight() + QPoint(0, 4));
-    } else if (iconName == "Pen") {
-        QPainterPath pth;
-        pth.moveTo(inner.bottomLeft());
-        pth.quadTo(inner.center(), inner.topRight());
-        p.drawPath(pth);
-    } else if (iconName == "Mosc") {
-        // Just draw a checkerboard-like icon
-        p.drawRect(inner.x(), inner.y(), inner.width()/2, inner.height()/2);
-        p.drawRect(inner.center().x(), inner.center().y(), inner.width()/2, inner.height()/2);
-    } else if (iconName == "Text") {
-        // Drawn as two strokes rather than a font glyph. The other five icons are
-        // 2px line drawings that fill `inner`; a glyph rendered with the default
-        // font came out visibly smaller and thinner than its neighbours, ignored
-        // the 2px pen entirely, and varied with whatever font the system had.
-        p.drawLine(inner.left(), inner.top(), inner.right(), inner.top());
-        p.drawLine(inner.center().x(), inner.top(), inner.center().x(), inner.bottom());
-    } else if (!label.isEmpty()) {
-        // Action buttons (Undo / Copy / Save / Cancel) are labelled with text. The
-        // caption arrives already translated, so the toolbar follows the selected
-        // language. The font is derived from the widget font rather than a
-        // hardcoded family, so CJK captions do not depend on per-glyph fallback.
+    if (!label.isEmpty()) {
+        // Action buttons (Undo / Copy / Save / Pin / Cancel) are labelled with text. The
+        // caption arrives already translated, so the toolbar follows the selected language.
+        // The font is derived from the widget font rather than a hardcoded family, so CJK
+        // captions do not depend on per-glyph fallback.
         p.save();
         QFont labelFont = p.font();
         labelFont.setPointSize(8);
         p.setFont(labelFont);
+        p.setPen(iconColor);
         p.drawText(rect, Qt::AlignCenter, label);
         p.restore();
     }
@@ -539,6 +548,7 @@ void ToolbarWidget::handleActionClick(const QString& action) {
     if (action == "Undo") emit undoRequested();
     else if (action == "Copy") emit copyRequested();
     else if (action == "Save") emit saveRequested();
+    else if (action == "Pin") emit pinRequested();
     else if (action == "Cancel") emit cancelRequested();
 }
 

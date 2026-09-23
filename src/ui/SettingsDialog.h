@@ -32,6 +32,7 @@ public:
 private slots:
     void onBrowse();
     void onFormatChanged();
+    void onHistoryToggled();
     void onRestoreDefaults();
     void onAccept();
 
@@ -46,6 +47,7 @@ private:
     QGroupBox* saveGroup_;
     QGroupBox* captureGroup_;
     QGroupBox* annotationGroup_;
+    QGroupBox* historyGroup_;
 
     QLabel* hotkeyLabel_;
     QLabel* hotkeyHint_;
@@ -53,6 +55,7 @@ private:
     QLabel* saveDirLabel_;
     QLabel* saveFormatLabel_;
     QLabel* jpegQualityLabel_;
+    QLabel* historyLimitLabel_;
 
     QKeySequenceEdit* hotkeyEdit_;
     QComboBox* languageCombo_;
@@ -61,8 +64,13 @@ private:
     QPushButton* browseButton_;
     QComboBox* formatCombo_;
     QSpinBox* qualitySpin_;
+    QCheckBox* quietSaveCheck_;
+    QCheckBox* saveOnCopyCheck_;
     QCheckBox* includeCursorCheck_;
     QCheckBox* rememberToolsCheck_;
+    QCheckBox* historyEnabledCheck_;
+    QSpinBox* historyLimitSpin_;
+    QCheckBox* historyNotifyCheck_;
     QPushButton* restoreButton_;
 };
 

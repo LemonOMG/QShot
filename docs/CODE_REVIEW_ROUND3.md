@@ -1,5 +1,9 @@
 # QShot 代码审查报告（第三轮）
 
+> **修复状态已在 M6 清理（2026-09-23）时逐条复核更新。** 第四节表格的 ✅/❌ 是当前状态；
+> 正文里的叙述与「建议修复顺序」保留当时（2026-09-20）的判断，不要当成现状读 ——
+> 本轮复核就发现 P1-3/P1-6 其实早就修掉了，只是这张表没跟上。当前进度看 `ROADMAP.md`。
+
 - 审查时间：2026-09-20
 - 基线提交：`32b1eed`（工作区干净，无未提交改动）
 - 审查范围：`src/` 全部 24 个文件、`CMakeLists.txt`、`docs/`、仓库卫生
@@ -185,15 +189,15 @@ src/overlay/ToolbarWidget.cpp:339:94: warning: unused parameter 'isAction' [-Wun
 | N-4 | `setDevicePixelRatio` 触发深拷贝 | ✅ 已修 |
 | N-5 | 手柄命中区偏移 | ✅ 已修（`hits()` lambda 统一 8 个手柄） |
 | N-6 | 草稿注释 + 硬编码刷新区域 | ✅ 已修（`MagnifierLayout` + `kMag*` 常量） |
-| N-7 | 马赛克增量包围盒（累积笔迹退化全图） | ❌ 未修 |
+| N-7 | 马赛克增量包围盒（累积笔迹退化全图） | ✅ 已修（M6 清理，见 `ROADMAP.md` 3.6.1）—— **探针顺带抓到一个既有 bug**：掩码按未裁剪的逻辑原点平移，触到选区边缘的笔画整幅马赛克错位 |
 | N-8 | `hoverTimer` 无参 `update()` | ✅ 已修（Idle 局部重绘） |
 | N-9 其余 | 工厂/焦点/坐标等细节 | ⚠️ 部分：`setGeometry` 重复调用、`currentOverlays_` 未清理失效 `QPointer`、`AnnotationLayer` 两处绘制逻辑未去重、`WinWindowDetector` 的 `EnumData` 未清零 + 仍是 `GetClassNameA`/`GetWindowLong`、`IScreenCapture.h` 仍 include `<QScreen>` |
-| P1-3 | 老式 `SIGNAL/SLOT` + `dynamic_cast<QObject*>` | ❌ 未修（`ShotApplication.cpp:96-99`） |
-| P1-4 | 单实例保护 + 热键无限重试 | ❌ 未修 |
+| P1-3 | 老式 `SIGNAL/SLOT` + `dynamic_cast<QObject*>` | ✅ **早已修掉，是这张表没跟上**：现用 `&IGlobalHotkey::hotkeyPressed`，全文无 `dynamic_cast<QObject*>`（M6 清理时复核） |
+| P1-4 | 单实例保护 + 热键无限重试 | ✅ 已修（M6 清理）—— 重试早已有上限（`kMaxHotkeyRetries`），本轮补上单实例保护：`core/ISingleInstance.h` + `WinSingleInstance` + `PlatformFactory::createSingleInstance()` |
 | P1-5 | 文本输入焦点未归还 | ⚠️ **本轮定位并升级为 R3-1（P0）** |
-| P1-6 | `default: vk = qtKey;` 静默产出错误 VK | ❌ 未修 |
-| P1-8 | `trayMenu_` 泄漏（`new QMenu()` 无 parent） | ❌ 未修（`ShotApplication.cpp:51`） |
-| P3 | 仓库残留（根 `main.cpp`、`Main.qml`、`build_output.txt`、空 `err.txt`/`out.txt`） | ❌ 未修 |
+| P1-6 | `default: vk = qtKey;` 静默产出错误 VK | ✅ 主体早已修掉（`virtualKeyFor()` 显式映射表，未覆盖返回 0；`MOD_NOREPEAT` 已用宏）；本轮只剩 `hotkeyId_ = 1001` 魔数，已改 `constexpr int kHotkeyId` |
+| P1-8 | `trayMenu_` 泄漏（`new QMenu()` 无 parent） | ✅ 已修（M6 清理）—— `trayMenu_` 已是 `unique_ptr`；顺带把 `globalHotkey_` 的三份所有权表达收敛成 `unique_ptr` + 无父对象 |
+| P3 | 仓库残留（根 `main.cpp`、`Main.qml`、`build_output.txt`、空 `err.txt`/`out.txt`） | ✅ 已清理 |
 
 ---
 
@@ -204,7 +208,7 @@ src/overlay/ToolbarWidget.cpp:339:94: warning: unused parameter 'isAction' [-Wun
 3. **R3-4** 坐标空间统一（决定多屏能不能用）
 4. **R3-6** 局部重绘（决定 4K 下流不流畅）
 5. **R3-7 / R3-8 / R3-9** 清理与收尾
-6. 回头处理 N-2、N-7、P1-4、P1-8、P3
+6. 回头处理 N-2、N-7、P1-4、P1-8、P3 —— **已在 M6 清理时全部做完**（N-2 工厂判空、N-7 马赛克增量、P1-4 单实例、P1-8 所有权收敛、P3 仓库残留）
 
 ---
 

@@ -105,6 +105,11 @@ SettingsDialog::SettingsDialog(QWidget* parent)
     saveDirLabel_ = new QLabel(saveGroup_);
     saveForm->addRow(saveDirLabel_, dirRow);
 
+    // Right under the folder it applies to: this toggle is about *that* folder, so putting
+    // it anywhere else in the group would make the reader connect the two themselves.
+    quietSaveCheck_ = new QCheckBox(saveGroup_);
+    saveForm->addRow(quietSaveCheck_);
+
     formatCombo_ = new QComboBox(saveGroup_);
     formatCombo_->addItem(text(Str::FormatPng), static_cast<int>(SaveFormat::Png));
     formatCombo_->addItem(text(Str::FormatJpeg), static_cast<int>(SaveFormat::Jpeg));
@@ -118,6 +123,12 @@ SettingsDialog::SettingsDialog(QWidget* parent)
     qualitySpin_->setRange(1, 100);
     jpegQualityLabel_ = new QLabel(saveGroup_);
     saveForm->addRow(jpegQualityLabel_, qualitySpin_);
+
+    // Last in the group: it is about the copy action rather than about the folder or the
+    // format, and it is the only row here that writes a file the user did not ask for by
+    // name -- so it reads best after everything that describes what the file looks like.
+    saveOnCopyCheck_ = new QCheckBox(saveGroup_);
+    saveForm->addRow(saveOnCopyCheck_);
 
     root->addWidget(saveGroup_);
 
@@ -134,6 +145,24 @@ SettingsDialog::SettingsDialog(QWidget* parent)
     rememberToolsCheck_ = new QCheckBox(annotationGroup_);
     annotationLayout->addWidget(rememberToolsCheck_);
     root->addWidget(annotationGroup_);
+
+    // --- history ------------------------------------------------------------
+    historyGroup_ = new QGroupBox(this);
+    auto* historyForm = new QFormLayout(historyGroup_);
+
+    historyEnabledCheck_ = new QCheckBox(historyGroup_);
+    connect(historyEnabledCheck_, &QCheckBox::toggled, this, &SettingsDialog::onHistoryToggled);
+    historyForm->addRow(historyEnabledCheck_);
+
+    historyLimitSpin_ = new QSpinBox(historyGroup_);
+    historyLimitSpin_->setRange(kMinHistoryLimit, kMaxHistoryLimit);
+    historyLimitLabel_ = new QLabel(historyGroup_);
+    historyForm->addRow(historyLimitLabel_, historyLimitSpin_);
+
+    historyNotifyCheck_ = new QCheckBox(historyGroup_);
+    historyForm->addRow(historyNotifyCheck_);
+
+    root->addWidget(historyGroup_);
 
     // --- buttons ------------------------------------------------------------
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
@@ -164,16 +193,23 @@ void SettingsDialog::retranslate() {
     saveGroup_->setTitle(text(Str::GroupSave));
     saveDirLabel_->setText(text(Str::SaveDirLabel));
     browseButton_->setText(text(Str::BrowseButton));
+    quietSaveCheck_->setText(text(Str::SaveQuietLabel));
     saveFormatLabel_->setText(text(Str::SaveFormatLabel));
     formatCombo_->setItemText(0, text(Str::FormatPng));
     formatCombo_->setItemText(1, text(Str::FormatJpeg));
     jpegQualityLabel_->setText(text(Str::JpegQualityLabel));
+    saveOnCopyCheck_->setText(text(Str::SaveOnCopyLabel));
 
     captureGroup_->setTitle(text(Str::GroupCapture));
     includeCursorCheck_->setText(text(Str::IncludeCursorLabel));
 
     annotationGroup_->setTitle(text(Str::GroupAnnotations));
     rememberToolsCheck_->setText(text(Str::RememberToolsLabel));
+
+    historyGroup_->setTitle(text(Str::GroupHistory));
+    historyEnabledCheck_->setText(text(Str::HistoryEnabledLabel));
+    historyLimitLabel_->setText(text(Str::HistoryLimitLabel));
+    historyNotifyCheck_->setText(text(Str::HistoryNotifyLabel));
 
     restoreButton_->setText(text(Str::RestoreDefaultsButton));
 }
@@ -187,10 +223,16 @@ void SettingsDialog::loadFromSettings() {
     saveDirEdit_->setText(s.saveDirectory());
     formatCombo_->setCurrentIndex(s.saveFormat() == SaveFormat::Jpeg ? 1 : 0);
     qualitySpin_->setValue(s.jpegQuality());
+    quietSaveCheck_->setChecked(s.quietSave());
+    saveOnCopyCheck_->setChecked(s.saveOnCopy());
     includeCursorCheck_->setChecked(s.includeCursor());
     rememberToolsCheck_->setChecked(s.rememberToolSettings());
+    historyEnabledCheck_->setChecked(s.historyEnabled());
+    historyLimitSpin_->setValue(s.historyLimit());
+    historyNotifyCheck_->setChecked(s.historyNotifyOnCopy());
 
     onFormatChanged();
+    onHistoryToggled();
 }
 
 void SettingsDialog::onFormatChanged() {
@@ -199,6 +241,16 @@ void SettingsDialog::onFormatChanged() {
     const bool jpeg = formatCombo_->currentData().toInt() == static_cast<int>(SaveFormat::Jpeg);
     jpegQualityLabel_->setVisible(jpeg);
     qualitySpin_->setVisible(jpeg);
+}
+
+void SettingsDialog::onHistoryToggled() {
+    // Disabled rather than hidden here, unlike the JPEG quality row: hiding it would
+    // make the group jump to a different height every time the box is ticked, and the
+    // limit is still meaningful information ("what will it be if I turn this back on").
+    const bool on = historyEnabledCheck_->isChecked();
+    historyLimitLabel_->setEnabled(on);
+    historyLimitSpin_->setEnabled(on);
+    historyNotifyCheck_->setEnabled(on);
 }
 
 void SettingsDialog::onBrowse() {
@@ -240,8 +292,13 @@ void SettingsDialog::onAccept() {
                         ? SaveFormat::Jpeg
                         : SaveFormat::Png);
     s.setJpegQuality(qualitySpin_->value());
+    s.setQuietSave(quietSaveCheck_->isChecked());
+    s.setSaveOnCopy(saveOnCopyCheck_->isChecked());
     s.setIncludeCursor(includeCursorCheck_->isChecked());
     s.setRememberToolSettings(rememberToolsCheck_->isChecked());
+    s.setHistoryEnabled(historyEnabledCheck_->isChecked());
+    s.setHistoryLimit(historyLimitSpin_->value());
+    s.setHistoryNotifyOnCopy(historyNotifyCheck_->isChecked());
 
     accept();
 }

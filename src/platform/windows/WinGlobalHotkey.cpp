@@ -94,7 +94,12 @@ bool WinGlobalHotkey::registerHotkey(const QKeySequence& sequence) {
     // The MOD_NOREPEAT flag prevents the hotkey from firing repeatedly if held down.
     fsModifiers |= MOD_NOREPEAT;
 
-    hotkeyId_ = 1001; // Arbitrary ID
+    // Only ever compared against msg->wParam below, and RegisterHotKey's id is scoped to
+    // this thread's message queue, so the value itself carries no meaning -- it just has to
+    // be non-zero and stable.
+    constexpr int kHotkeyId = 1001;
+
+    hotkeyId_ = kHotkeyId;
     
     // HWND is NULL, which means WM_HOTKEY is posted to the thread's message queue.
     if (RegisterHotKey(NULL, hotkeyId_, fsModifiers, vk)) {

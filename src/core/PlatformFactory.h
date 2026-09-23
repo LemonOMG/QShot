@@ -7,6 +7,7 @@
 #include "IGlobalHotkey.h"
 #include "IWindowDetector.h"
 #include "IAutoStart.h"
+#include "ISingleInstance.h"
 
 namespace qshot {
 
@@ -16,6 +17,9 @@ public:
     static IGlobalHotkey* createGlobalHotkey(QObject* parent = nullptr);
     static std::unique_ptr<IWindowDetector> createWindowDetector();
     static std::unique_ptr<IAutoStart> createAutoStart();
+    /// nullptr on platforms without an implementation, in which case the application
+    /// simply runs without a single-instance guard.
+    static std::unique_ptr<ISingleInstance> createSingleInstance();
 };
 
 } // namespace qshot

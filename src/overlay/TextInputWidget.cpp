@@ -46,7 +46,7 @@ int TextInputWidget::minimumEditorWidth() const {
     return fm.horizontalAdvance(placeholderText()) + (kTextMargin + kFrameWidth) * 2 + 12;
 }
 
-void TextInputWidget::startInput(const QPoint& pos, const QColor& color, int fontSize) {
+void TextInputWidget::startInput(const QPoint& globalPos, const QColor& color, int fontSize) {
     finished_ = false;
     clear();
     
@@ -69,7 +69,7 @@ void TextInputWidget::startInput(const QPoint& pos, const QColor& color, int fon
     QFontMetrics fm(f);
     resize(qMax(minimumEditorWidth(), fm.averageCharWidth() * 10),
            fm.height() + (kTextMargin + kFrameWidth) * 2);
-    move(pos);
+    move(globalPos);
     
     show();
     // setFocus() only sets the focus widget *inside* this window; it does not make

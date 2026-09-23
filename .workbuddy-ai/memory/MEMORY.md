@@ -1,115 +1,77 @@
 # QShot 项目长期记忆
 
-## 环境（实测确认）
+> 只放**跨会话必需**的结论。细节分流到别处，这里不重复：
+> **实测过程** → `.workbuddy-ai/memory/YYYY-MM-DD.md`；**Qt GUI 验证方法论** → skill `qt-gui-verification`；
+> **Windows 部署与安装包** → skill `qt-windows-deploy`；**计划与决策理由** → `docs/ROADMAP.md`；**设置项语义** → `docs/SETTINGS.md`。
 
-- Qt 6.11.2 MinGW 64bit：`D:/Qt/6.11.2/mingw_64`
-- 编译器：`D:/Qt/Tools/mingw1310_64/bin/g++.exe`；构建：`.../mingw32-make.exe`
-- 构建目录：`build/Desktop_Qt_6_11_2_MinGW_64_bit_Debug`（Qt Creator 生成）
-- 本机显示：**1 块屏**，`geometry=(0,0 1707x1067)`，`devicePixelRatio=1.5`（分数缩放是默认路径，不是边缘情况）
+## 环境
 
-## 常用命令
-
-构建验证：
-```
-D:/Qt/Tools/mingw1310_64/bin/mingw32-make.exe -C build/Desktop_Qt_6_11_2_MinGW_64_bit_Debug
-```
-秒级静态检查（不触发 AUTOMOC，用于快速发现警告）：
-```
-D:/Qt/Tools/mingw1310_64/bin/g++.exe -std=c++17 -fsyntax-only -Wall -Wextra -Wshadow \
-  -I src -I D:/Qt/6.11.2/mingw_64/include -I .../QtCore -I .../QtGui -I .../QtWidgets \
-  <各 .cpp>
-```
-Qt 行为探针（写独立小程序实测 Qt 语义，链接 `-lQt6Core -lQt6Gui`，运行前把 `D:/Qt/6.11.2/mingw_64/bin` 加进 PATH）。
-
-## Qt 语义事实（已实测，勿再猜）
-
-| 事实 | 结论 |
-| --- | --- |
-| `QImage::setDevicePixelRatio()` | 会 **detach → 深拷贝**。对全屏图（2560×1600×4≈16MB）用在每次 paintEvent 上是实打实的性能 bug |
-| `QPixmap::toImage()` | **保留** devicePixelRatio |
-| `QImage::copy(QRect)` | 保留 DPR；rect 是**物理像素**坐标 |
-| `QPainter::drawImage(x, y, img)` | **遵循** img 自身的 DPR（8×8@DPR2 画满 16×16） |
-| `QImage().fill(...)`（null 图） | 安全空操作，不崩溃，仍是 null |
-| `setDevicePixelRatio()` 与 DPI 元数据 | **互不影响**。`dotsPerMeter` 恒为 3780（96 DPI），保存 PNG 不落盘 DPR |
-| `QScreen::grabWindow(0)` | 返回**该屏**的物理尺寸位图 + 该屏 DPR（1707×1067@1.5 → 2560×1600@1.5）。注意 Qt 用**截断**（2560.5→2560），而业务代码常用 `qRound`（2561），差 1px 靠 `intersected()` 兜住 |
-| 多个顶层窗口逐个 `show()` | 焦点给**最后一个** show() 的窗口；不调 `activateWindow()` 就无法指定焦点归属 |
-| `QPainter` 画在 `QImage` 上 | **会**按该图自身的 `devicePixelRatio` 缩放传入的坐标（10 逻辑单位 @dpr1.5 覆盖 15 物理像素）。所以「逻辑坐标画进物理尺寸的图」是正确写法，不是 bug |
-| `QImage::fromImage()` | 保留 DPR（`QPixmap::fromImage` 亦然），之后再 `setDevicePixelRatio()` 是冗余 |
-| `QWidget::setFocus()` | **只设置窗口内部焦点，不激活窗口**。窗口不是 activeWindow 时，`show()+setFocus()` 拿不到键盘输入，必须 `activateWindow()+setFocus()` |
-| `toolbar->show()`（Qt::Tool 子窗口） | 会让 `QGuiApplication::focusWindow()` 变成 **null**（整个进程无焦点窗口），所有按键被丢弃；`hide()` 不会恢复，只有显式 `activateWindow()` 能恢复 |
-| 键盘事件传播 | **不会**从窗口型子控件（`Qt::Tool` 等）传播到 `parentWidget()`，即使 parent 关系存在。别指望父窗口兜快捷键 |
-| `QTextEdit` + `WA_TranslucentBackground` | stylesheet 的 `border` **一个像素都不画**（`probe_qss_border.cpp` 遍历所有变体均 0 帧像素） |
-| `QTextEdit` 上自绘 | `QPainter(this)` 画的内容被 **viewport 子控件盖住**，必须画在 `viewport()` 上（`probe_frame.cpp`：0 → 970 帧像素） |
-| 两次连续 `QScreen::grabWindow(0)` | **像素不稳定**（实测 94% 像素不同、最大通道差 106）。所以「比较两次截图的像素差」在本机**不能**用来判断某物是否被画上去 |
-| `QPixmap::toImage() → setDevicePixelRatio(1.0) → QPixmap::fromImage()` | **无损**（合成图实测 `changed=0, maxDelta=0`）。需要按物理坐标合成时这是安全做法 |
-| `QWidget::grab()` | 返回 **DPR 缩放后**的位图，而 `findChildren()` 给的几何是**逻辑**坐标。两者直接对比会误判成「布局没铺开」。要 1:1 比对必须用 DPR=1 的 `QWidget::render(&pixmap)` |
-| `DrawIconEx` + 自顶向下 32bpp DIB section | **会正确写入 alpha**（48×48 光标实测 483 个非透明像素）。用 `CreateCompatibleBitmap` 则没有 alpha 通道 |
-| 终端启动的进程里 `GetCursorInfo` | 会话空闲时可能返回 `hCursor=NULL` / `CURSOR_SHOWING=0`（系统隐藏了光标）→ 光标相关断言不可靠 |
-| `SetCursorPos()` | 在终端启动的探针里**不可靠**（设 `(1600,1000)` 实际落到 `(850,416)`），不能用来把光标钉到已知位置做确定性测试 |
+- Qt 6.11.2 MinGW 64bit `D:/Qt/6.11.2/mingw_64`；工具链 `D:/Qt/Tools/mingw1310_64/bin/`
+- Debug 构建：`mingw32-make.exe -C build/Desktop_Qt_6_11_2_MinGW_64_bit_Debug`（**链接前先确认没有 qshot.exe 在跑**，否则 `ld` 报 `Permission denied`）
+- 发布：`bash tools/deploy.sh --build` → `dist/QShot/`（自包含 34MB）；`bash tools/smoke_deploy.sh [--app]` 在部署目录里实跑
+- 静态检查（秒级，不跑 AUTOMOC）：`g++ -std=c++17 -fsyntax-only -Wall -Wextra -Wshadow -Wunused -Isrc -I<Qt>/include{,/QtCore,/QtGui,/QtWidgets} $(find src -name '*.cpp')`
+- 探针：`bash build-review/build_probes.sh [--run] [名字...]`，当前 **21 个目标**
+  - ⚠️ 全量 **~4 分钟，必须后台跑**；⚠️ 跑的时候**绝不能编辑该脚本**（bash 边读边执行）
+  - ⚠️ 不加 `--run` 自己跑 exe 时，**必须把 Qt 与 MinGW 的 `bin` 加进 `PATH`**，否则 loader 失败被报成**无输出的 `exit=127`**（与「文件不存在」一模一样）
+  - ⚠️ `C:/...` 能当编译参数、**不能当命令**，执行用 `cygpath -u`；⚠️ `probe_deploy` 在 `NO_RUN` 里，必须在部署目录跑
+  - 断言总数由脚本自己汇总，**别用 `| tail` 看结尾**（会静默丢掉前半段，剩下的和看着权威但是错的）。moc 按**类名 glob** 定位，别写 hash 目录
+- 本机 **1 块屏** `1707x1067`、**dpr=1.5**（分数缩放是默认路径，不是边缘情况）
 
 ## 项目约定
 
-- 开发规则见 `.agents/rules/q-shot.md`：禁 Q 前缀类名、命名空间 `qshot`、平台能力须抽象为接口、YAGNI、每次变更必须编译通过。
-- 规则内部存在冲突：「不为单一实现创建抽象接口」与现存 3 个单实现接口（`IScreenCapture`/`IGlobalHotkey`/`IWindowDetector`）+ `PlatformFactory` 矛盾。已两次写入审查报告，**待用户裁决**。
-- 平台装配点：`src/core/PlatformFactory.cpp`（`#ifdef Q_OS_WIN` 分支）。工厂返回 `nullptr` 的情况**已在本轮判空**（`registerGlobalHotkeys` / `onCaptureTriggered`），新增平台能力时记得照做。
-- 坐标约定：标注点统一为「相对选区左上角的逻辑坐标」；`AnnotationLayer::paint()` 需自行 `translate`，`renderToImage()` 不需要（传入的是已裁剪图）——两者约定不同，改动时容易踩。
-- 放大镜/马赛克等涉及 DPR 的换算一律 `qRound(logical * dpr)`；本机 dpr=1.5，取整误差需留意。
-- **设置存储**：`QSettings`，Windows 下为 `HKCU\Software\QShot\QShot`。`main.cpp` 的 `setOrganizationName`/`setApplicationName` 必须在任何 `Settings` 访问**之前**执行。
-- **用户可见文案全部集中在 `src/core/Strings.cpp`**（中英两列表格，`Str::Count` 哨兵 + `static_assert` 保证与枚举同步，当前 44 条）。新增文案必须加在那里，不要在别处写 `QStringLiteral("中文")`。Qt 自身文案（标准按钮等）由 `installQtTranslations()` 加载 `qtbase_zh_CN.qm`。
-- **排查漏翻的硬编码文案：按「设置点」扫，不要按中文字符范围扫。** 踩过的坑：工具栏 4 个动作按钮的文案是**英文**字面量（`"Undo"/"Copy"/"Save"/"Cncl"`，藏在 `kButtons` 表里当 `iconName`），按 `[\x{4e00}-\x{9fff}]` 扫全部漏掉。正确 grep：`drawText(|setText(|setToolTip(|setWindowTitle(|setPlaceholderText(|showMessage(|QMessageBox::|setTitle(|addItem(`。
-- **画在按钮里的文字不要用写死的字体族**（如 `QFont("Arial", 8)`）——中文会走逐字回退、字形大小不可控。从 `p.font()` 派生再设字号。
-- 工具栏按钮只有 32px 宽，动作按钮文案必须极短（英文用 `Cncl` 而非 `Cancel`）；改文案后要重新渲染确认不粘连。
-- 设置对话框（`src/ui/SettingsDialog.cpp`）只读写 `Settings`；热键重注册、开机启动写注册表等**副作用一律留在 `ShotApplication`**，通过 `Settings` 的信号触发。
-- 开机启动：`WinAutoStart` 用 `QSettings(path, NativeFormat)` 直指 Run 键，值必须是**带引号的原生分隔符路径**（含空格路径否则被截断）。
+- 规则 `.agents/rules/q-shot.md`：禁 Q 前缀类名、命名空间 `qshot`、C++17、平台能力抽象为接口、YAGNI、**每次变更必须编译通过**。
+- **`SnapOverlay::renderSelectionImage()` 是唯一的合成入口**（`physicalSelectionRect()` → `backgroundImage_.copy()` → `annotationLayer_.renderToImage()`）。复制 / 另存 / 贴图都走它。
+- **overlay 与 pin 之间只走信号**：`SnapOverlay::pinRequested` → `ShotApplication::onPinRequested()` 建窗口。overlay 不知道 `PinWindow` 存在，贴图才能比 overlay 活得久。
+- 平台装配点 `src/core/PlatformFactory.cpp`（`#ifdef Q_OS_WIN`），返回 `nullptr` 已判空。**链接时必须把 5 个 Windows 实现的 `.cpp` 全带上**（vtable 在自己的 TU 里发出，只链调用到的那个仍缺符号），并补 `-ldwmapi -lgdi32 -luser32`。
+- 坐标约定：标注点 =「相对选区左上角的**逻辑**坐标」。`AnnotationLayer::paint()` 需自行 `translate`，`renderToImage()` **不**需要 —— 两者约定不同，易踩。DPR 换算一律 `qRound(logical * dpr)`。
+- **设置** `QSettings`（Windows = `HKCU\Software\QShot\QShot`）。`main.cpp` 的 `setOrganizationName`/`setApplicationName` 必须在任何 `Settings` 访问**之前**。
+- **用户可见文案全在 `src/core/Strings.cpp`**（中英两列 + `Str::Count` 哨兵 + `static_assert`，当前 **70** 条）。**查漏翻按「设置点」扫，不要按中文字符范围扫**（工具栏动作按钮是英文字面量 `Undo/Copy/Save/Cncl`，按 `[\x{4e00}-\x{9fff}]` 全漏）。grep：`drawText(|setText(|setToolTip(|setWindowTitle(|setPlaceholderText(|showMessage(|QMessageBox::|setTitle(|addItem(`。
+- 按钮内文字**不要写死字体族**（中文会逐字回退），从 `p.font()` 派生再设字号；工具栏按钮只有 32px 宽，动作文案必须极短，**改文案后必须重跑 `render_pin` 的中英双语断言**。
+- `SettingsDialog` 只读写 `Settings`；热键重注册、写注册表等**副作用一律留在 `ShotApplication`**，经 `Settings` 信号触发。`WinAutoStart` 用 `QSettings(path, NativeFormat)` 直指 Run 键，值必须是**带引号的原生分隔符路径**。
+- **列表类 UI 用 `aboutToShow` 重建**（如 `HistoryMenu`），别维护平行副本。**动作一律按条目 `id` 闭包捕获，不按行号**（行号会静默错位）。
+- **注释要写「为什么」**：非显然代码都带解释性注释，含实测数字与被否掉的替代方案。
 
-## 待用户决策
+## 实测过的语义（本项目反复踩的）
 
-1. 「跨平台」是否当真：若当真，需给工厂加 Null Object 或判空 + 加 macOS/Linux CI 编译 job。
-2. 多屏 overlay 的键盘焦点路由方案 —— **第三轮已查明与屏幕数无关**：`showToolbar()` 的 `toolbar_->show()` 本身就清空 focusWindow。待定方案：面板 `show()` 后 `overlay->activateWindow()` / 纯展示面板加 `Qt::WindowDoesNotAcceptFocus` / 快捷键改用 `Qt::ApplicationShortcut` 兜底。
-3. ~~是否清理仓库残留~~ **已办（2026-09-21）**：根 `main.cpp`、`Main.qml`、`build_output.txt`、空 `err.txt`/`out.txt`、死目录 `importedcontent/` 均已 `git rm`；`build-mingw/`、`.cache/` 已删；`build-review/` 只留源码+PNG（25M→485K）。`.gitignore` 已补 `.cache/` 与根级残留名。ROUND3 P3 闭环。
-4. 马赛克是否改为「提交时才落层」（当前拖动即写入 `mosaicLayer_`，右键取消会残留并被导出）。
-5. 保存是否要支持「静默保存到固定目录」（当前仍每次弹保存对话框，只是默认目录/格式按设置预填）。
-6. 设置对话框目前 OK 时统一应用，因此切换语言不会即时重译已打开的窗口（换来「取消」是真取消）。是否要改成即时生效。
+| 事实 | 结论 |
+| --- | --- |
+| `qRound` 正负不对称 | 正 .5 向 +∞、负 .5 远离零 → 对**绝对坐标**取整会让同一手势在负原点屏上差 1px；要平移不变就对**位移**取整 |
+| 描边 `drawRect` 边框 | 笔**骑在路径上**各铺半笔宽 → DPR 2 时最后一列染成 `#FF0000A5`。要精确对齐必须用 **`fillRect` 色带** |
+| 逻辑像素边框宽 vs DPR | 内容起点 = `kBorderWidth × dpr` 设备像素，**必须整数**，否则整幅图平移半像素并被重采样 |
+| **带 dpr 的 `QImage` 上 `QPainter::translate`** | 平移量是**逻辑**坐标（被 dpr 缩放）；而离屏图的**原点可能是裁剪过的物理坐标**。两者只在没裁剪时重合 —— 混淆会让整幅掩码错位（N-7 就是这么来的：`translate(-logicalBounding.topLeft())` 应为 `translate(-physicalBounding.x()/dpr, ...)`） |
+| 展示型面板抢焦点 | 已解决：`Qt::WindowDoesNotAcceptFocus` → `WS_EX_NOACTIVATE`（实测 `0x08080088`） |
 
-## 产品能力缺口（第四轮评估结论）
+## 危险操作
 
-按「用户实际要办的事」而非功能清单评估，当前覆盖 2 / 6 个场景：
+**⚠️ `git rm` 曾在 `docs/` 上连带清空整个工作区目录**（含未跟踪文件，成因未定位）。规矩：① 删「已跟踪+未跟踪混装」目录前先把未跟踪文件复制到仓库外；② `git rm` 后**必须 `ls`**，不能只信 `git status`；③ 更稳的是 `rm <file>` + `git add -A <dir>`。
+救回未跟踪文件的唯一来源：`~/.workbuddy-ai/file-history/<sessionId>/<hash>@vN`（先在 `~/.workbuddy-ai/changes-index/<sessionId>.json` 确认动过）。死路：`git fsck --lost-found`、VSCode `User/History`、回收站、stash。
 
-- **已能胜任**：① 选中区域→标注→复制/另存（六种标注、Enter 复制、Ctrl+Z 撤销）；② 单击抓取整窗（悬停高亮 + `hoverWindowRect_`，见 `SnapOverlay.cpp` 约 778 行）
-- **不能胜任**：③ 贴图（钉在屏幕上参考对照）；④ 滚动长截图；⑤ OCR 取字；⑥ 多显示器（**基础缺陷**：R3-4 坐标空间混用 + 焦点路由未修，非功能缺失）
-- **打磨项**：托盘图标是纯蓝色方块（`ShotApplication.cpp` 里 `pixmap.fill(Qt::blue)`）；工具栏图标是几何占位符而非真图标；无安装包/签名
+## 当前状态
 
-关键判断：**截图工具的泛用性不取决于「能不能截」，而取决于「截完之后能拿它干什么」**。目前出口只有剪贴板与存盘两条。另外多屏是**门槛问题而非加分项**——2 屏用户遇到坐标/焦点错误会直接弃用，这是泛用性的硬上限。
+- **路线**：走「全能」路线，计划见 `docs/ROADMAP.md`。本轮 = Phase 0 地基 + Phase 1 出口能力 + Phase 3 打磨；**OCR 与滚动长截图已决策推迟**（评估结论保留在 ROADMAP 第四节）。
+- **M0~M6 全部完成**：拆模块 → 多屏坐标空间（真双屏待人工确认）→ 焦点路由（本机 1 屏无法验证）→ 贴图 + 悬停样式 → 历史记录 → 序号/高亮 → 真图标集 + 工具栏图标集 + 部署 + 设置补项 + 清理。
+- **M6 清理项已收尾**：N-7 马赛克增量 ✅（探针抓到一个**既有 bug**：掩码按被裁剪的物理原点平移）；P1-4 单实例保护 ✅；P1-3/6/8 复核后确认早已修掉，只剩 `hotkeyId_` 魔数（已改常量）。
+- 规模：`src/` **6933 行** / 51 个 `.h`+`.cpp`；最大 `SnapOverlay.cpp` 755 行；文案 70 条。
+- **本轮未做**：安装包**从未编译**（本机无 Inno Setup）、代码签名（无证书）、R3-6 局部重绘（刻意不做）。
+- 报告：`docs/CODE_REVIEW.md` / `_ROUND2.md` / `_ROUND3.md`。
+- **坐标空间契约（M1 定的，别再搞反）**：`WinWindowDetector` 返回**全局桌面**坐标；`SnapOverlay` 在自己边界处**归一化一次**（`translated(-globalOrigin())`），内部一律 widget 局部。顶层窗口（`ToolbarWidget` / `TextInputWidget` / `PinWindow`）的 `move()`/`pos()` 读的是**全局**坐标。`globalOrigin()` = `mapToGlobal(QPoint(0,0))`，**不要**改成 `screenGeometry_.topLeft()`。
+- **工具栏宽度不是约束**（M5 实测推翻了原计划里的「阻塞项」）：它是**顶层窗口**，钳制在**屏幕**矩形内，与选区无关。8 工具 = 484px。**别再为此做两排布局或溢出菜单。**
+- **部署两条硬事实**：① `windeployqt --translations <lang>` **不部署** `qtbase_<lang>.qm`（只给 99 字节的元目录），必须 `--no-translations` + 显式复制；② 图标**已编进 exe**（`resources.qrc` + AUTORCC），exe 旁边不需要任何 `.ico`。
+- 两个保存开关（都默认关闭）：`save/quiet` **只作用于截图工具栏的保存按钮**；`save/onCopy` **只作用于正在截的这一张**。静默保存 `screenshot_<时间戳>.<ext>`，**同名后缀递增绝不覆盖**，失败**必须出声**。两条保存路径共用 `writeImage()`/`resolvedSaveDirectory()` —— 格式来源不同，**编码不能不同**。
 
-建议补齐优先级（性价比排序）：① 修多屏（R3-4）→ ② 贴图（工作量最小、复用现有选区/移动逻辑）→ ③ 历史记录（环形缓冲 + 托盘菜单）→ ④ 序号/高亮标注 → ⑤ 滚动截图 → ⑥ OCR（可用 Windows 内置 `Windows.Media.Ocr`，符合「优先复用原生能力」）。
+## 待用户裁决（索引；逐条理由见 `docs/ROADMAP.md` 第八节）
 
-## 审查历史
+1. 「跨平台」是否当真 —— 若当真需 Null Object + macOS/Linux CI 编译 job。
+2. 马赛克是否改「提交时才落层」（现在拖动即写入，右键取消会残留并被导出）。
+3. 「另存为」要不要也跟随 `save/quiet`（现在刻意不跟随）。
+4. 设置对话框 OK 时统一应用 → 切语言不即时重译已打开窗口；是否改即时生效。
+5. 规则冲突：「不为单一实现创建抽象接口」vs 现存 5 个单实现接口 + `PlatformFactory`。
+6. 贴图设置项（不透明度/细边框/是否置顶）与悬停内阴影深度、静止态 `#818181` 边框可读性 —— 审美判断。
+7. 历史记录默认值：条数 20 / 字节 200MB / 复制后托盘提示。
+8. 序号与高亮外观值（荧光笔 `#FDD835` a110 w18；徽标 `#E53935` d28）；**八工具图标形状**看 `build-review/toolbar_icons_zoom.png`。
+9. 「半透明矩形高亮」没做（只做了自由涂抹）；要补应给矩形工具加「填充」开关。
+10. **应用图标造型**看 `build-review/icon_preview.png`（改 `tools/make_icon.cpp` 后跑 `bash tools/make_icon.sh`）。
+11. 部署裁剪取舍：已剪 `Qt6Network`/`tls`/`networkinformation`/`generic`/`Qt6Svg`/`iconengines`/`qsvg`/`qgif`；日后要用 SVG 图标**先改 `tools/deploy.sh` 清单**，`probe_deploy` 第 `[4]` 节会报出哪条挡着。
+12. **代码签名**（无证书，SmartScreen 警告脚本解决不了）；**中文向导页**（需 `ChineseSimplified.isl`）。
+13. **单实例第二份只弹框退出** —— 更好的是「让第一份立刻截图」，但需消息专用窗口 + IPC（互斥量带不了载荷）。
 
-- 第一轮 `docs/CODE_REVIEW.md`；第二轮 `docs/CODE_REVIEW_ROUND2.md`；**第三轮 `docs/CODE_REVIEW_ROUND3.md`**（P0：文本标注无法输入、选完区后键盘全失效；均已探针实测）。
-- 第三轮已落地 R3-1/2/3/5/7/8 与 R3-9 部分（见报告第七节）；**未做**：R3-4 多屏坐标空间统一、R3-6 局部重绘、R3-9 剩余、N-2、N-7、P1-3/4/6/8、P3。
-- 第三轮后追加 **UI 可用性修复**（见报告第八节）：马赛克去颜色行（面板 398→174px）、文字尺寸改数字 14/18/24、输入提示改为 `viewport()` 上的绿色虚线框 + 占位符 + I 形光标 + 「点击输入文字」徽标。顺带修掉 `showSubPanel()` 先定位后 update 导致切工具面板尺寸不更新的 bug。
-- **离屏渲染验证法**（无头验证 UI 的有效手段，比探针可靠）：链接真实 `.cpp` + `build/.../qshot_autogen/<HASH>/moc_*.cpp`，把 widget `render()` 到 `QImage` 存 PNG，用 Read 目视。见 `build-review/render_panels.cpp`、`render_text_editor.cpp`、`render_settings_dialog.cpp`。**注意用 DPR=1 的 `render()`，不要用 `grab()`**。
-- **新增设置功能**（见 `docs/SETTINGS.md`）：快捷键（`QKeySequenceEdit`，校验需带修饰键或 F1–F24）、语言（中/英）、开机启动、保存目录/格式/JPEG 质量、截图包含鼠标指针、记住标注工具颜色粗细。`IGlobalHotkey::registerHotkey` 签名改为接收 `QKeySequence`；顺带修掉 `default: vk = qtKey` 的 VK 映射真 bug。
-- 工具栏修复两处（见 `docs/SETTINGS.md` 与当日日志）：文本工具图标由 `drawText("T")` 改为与其他图标一致的 2px 描边几何画法（原来既不吃画笔也不撑满内框）；4 个动作按钮文案改走文案表，`ButtonDef` 把 `iconName`（几何）与 `label`（文案）拆开。
-- 可复现探针留在 `build-review/probe_*.cpp`（该目录已 gitignore）。**直接调 Win32 GDI 的探针要额外链接 `-lgdi32 -luser32`**（主工程由 `Qt6::Gui` 传递）；集成测试探针要按需补齐各 `moc_*.cpp`。
-- **`build-review/` 约定（2026-09-21 起）：只存源码与证据，不存产物。** 该目录是扁平结构（无 CMakeLists），编译产物（`.exe`/`build.ninja`/`.ninja_deps`/`.ninja_log`/`CMakeCache.txt`/`cmake_install.cmake`/`CMakeFiles/`/`qshot_autogen/`/`.qt/`）一律不入库、用完即清；需要时按源码现编。当前内容 = 24 个 `.cpp` + 42 张 PNG，约 485K。
-
-## 验证环境限制（别再踩）
-
-**从终端启动的 GUI 探针永远拿不到系统前台**：`GetForegroundWindow()` 恒为终端窗口，Windows 据此拒绝 `SetForegroundWindow()`。于是任何依赖「窗口是否 active / `QGuiApplication::focusWindow()`」的断言在探针里都会**时好时坏**（同一份代码不同轮次结果相反），不能作为验收依据。`AttachThreadInput` 强制前台的写法也不可靠。
-
-可确定性地验证的只有：事件是否被某个 widget 收到（直接 `sendEvent` 到窗口）、`toPlainText()` 这类状态变化、Win32 z 序、编译/静态检查、**QSettings 读写往返、注册表写入后独立复核**。**涉及焦点/激活的结论必须由人工交互确认**。
-
-其他实测到的环境限制（第四轮补充）：
-
-- **本机两次连续 `grabWindow` 像素不稳定**（94% 像素不同）→ 不能靠像素差判断截图上有什么。
-- **终端进程里 `GetCursorInfo` 可能返回 `hCursor=NULL`**（会话空闲时系统隐藏光标）→ 光标验证不可靠。
-- `SetCursorPos()` 在探针里行为不可靠，无法把光标钉到已知位置。
-- `reg.exe` 被安全策略拉黑，不能用；改用 Python `winreg` 做注册表独立复核。
-
-## 危险操作与恢复（2026-09-21 实测）
-
-- **⚠️ `git rm` 在 `docs/` 上连带清空了整个目录**：索引只暂存了指定的 3 个文件（`git status` 完全正常），但工作区整个 `docs/` 被删，**连未跟踪文件一起没了**。审计日志确认本次会话无任何显式删除 `docs/` 的命令，成因未定位，按已知风险对待。
-- **规矩**：① 删 `docs/` 这类「已跟踪 + 未跟踪混装」目录前，先把未跟踪文件复制到仓库外；② `git rm` 后**必须 `ls` 该目录**，不能只信 `git status`；③ 更稳的替代是 `rm <file>` + `git add -A <dir>`，绕开 `git rm`。
-- **救回未跟踪文件的唯一可靠来源：`~/.workbuddy-ai/file-history/<sessionId>/<hash>@vN`**（agent 写过的文件的历史快照）。定位法：先在 `~/.workbuddy-ai/changes-index/<sessionId>.json` 搜文件名确认动过，再在对应 `file-history` 目录按特征词 grep 快照、挑体积与原件一致的最新版拷回。已跟踪文件则 `git checkout HEAD -- <path>` 即可。
-- 本次失败的死路（别再试）：`git fsck --lost-found` 悬空 blob、VSCode `User/History`、回收站、stash、临时目录——均无。

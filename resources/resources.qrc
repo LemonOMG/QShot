@@ -1,0 +1,14 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <!-- Embedded so the application is a single self-contained executable: the tray icon
+         has to be available before any window exists, and an external file would also mean
+         the icon could go missing if the install is copied around without it.
+
+         The .ico is used rather than the PNG because Windows picks the size it needs from
+         the multi-size icon (the tray asks for 16px, alt-tab for 32, Explorer for 256),
+         and a single PNG would be scaled down for all of them. -->
+    <qresource prefix="/icons">
+        <file alias="qshot.ico">qshot.ico</file>
+        <file alias="qshot_256.png">qshot_256.png</file>
+    </qresource>
+</RCC>
