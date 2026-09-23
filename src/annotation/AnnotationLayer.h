@@ -68,6 +68,15 @@ private:
     QImage mosaicLayer_;     // Transparent image holding mosaic blocks (physical pixels)
     QImage mosaicMask_;      // Grayscale/Alpha mask to track processed pixels
     QRect selectionRect_;
+
+    // Whether mosaicLayer_ actually holds any block.
+    //
+    // The layer is allocated once and kept, so "not null" stops meaning "has content"
+    // the moment the first mosaic is undone or the layer is cleared: an emptied layer
+    // is a full-selection transparent image, and blitting one costs a pass over every
+    // pixel of the selection on every repaint for nothing. Tracked here rather than
+    // recomputed by scanning annotations_ so the paint path stays free of that loop.
+    bool mosaicInkPresent_ = false;
 };
 
 } // namespace qshot

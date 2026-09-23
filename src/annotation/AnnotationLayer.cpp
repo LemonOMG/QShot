@@ -32,7 +32,11 @@ void AnnotationLayer::paint(QPainter& p, const QRect& selectionRect) const {
     // mosaicLayer_ carries dpr_ from the moment it is allocated, so it can be drawn
     // directly. Copying it just to call setDevicePixelRatio() would detach and copy
     // the whole layer on every repaint.
-    if (!mosaicLayer_.isNull()) {
+    //
+    // Gated on mosaicInkPresent_ rather than on the image being non-null: the layer is
+    // allocated once and then survives an undo or a clear, so a null check would blit a
+    // fully transparent selection-sized image on every frame of every later interaction.
+    if (mosaicInkPresent_) {
         p.drawImage(0, 0, mosaicLayer_);
     }
 
@@ -207,8 +211,8 @@ QImage AnnotationLayer::renderToImage(const QImage& basePhysical) const {
     result.setDevicePixelRatio(dpr_);
     
     QPainter p(&result);
-    // Draw mosaic layer if available (already carries dpr_).
-    if (!mosaicLayer_.isNull()) {
+    // Draw mosaic layer if it holds anything (it already carries dpr_).
+    if (mosaicInkPresent_) {
         p.drawImage(0, 0, mosaicLayer_);
     }
     
@@ -252,6 +256,10 @@ void AnnotationLayer::setBaseImage(const QImage& fullBg, const QRect& selectionR
 }
 
 void AnnotationLayer::rebuildMosaicCache() {
+    // Reset before replaying: the flag describes the layer, and the layer is about to be
+    // emptied. updateMosaic() sets it again for every annotation that actually lays a
+    // block down, so an undo that removes the last mosaic correctly leaves it false.
+    mosaicInkPresent_ = false;
     mosaicLayer_.fill(Qt::transparent);
     mosaicMask_.fill(0);
     for (const auto& a : annotations_) {
@@ -385,6 +393,10 @@ void AnnotationLayer::updateMosaic(const Annotation& a, const QRect& logicalDirt
                             mMaskRow[x + bx] = 255;
                         }
                     }
+                    // Set where the block is written, not where the layer is allocated:
+                    // an allocated-but-empty layer is exactly the case the paint path has
+                    // to be able to skip.
+                    mosaicInkPresent_ = true;
                 }
             }
         }

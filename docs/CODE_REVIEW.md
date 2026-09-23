@@ -138,6 +138,10 @@
 
 ## P2 性能
 
+> **状态（2026-09-23，性能项收尾轮复核）**：本节四条已全部处理，复核方式见各条末尾的「现状」。
+> 下面保留的是**发现时**的描述与建议，其中的行号、代码片段和部分建议（例如「叠一个 ~16ms 合并节流」）已经过时，
+> 不要照着改。性能项的实测证据与最终实现见 `docs/ROADMAP.md` §3.7 和探针 `build-review/probe_partial_repaint.cpp`。
+
 ### P2-1 马赛克每次鼠标移动都全图扫描（最严重的性能问题）
 
 - 位置：`AnnotationLayer.cpp:172-252`，调用点 `SnapOverlay.cpp:442-444`、`SnapOverlay.cpp:512-517`
@@ -148,21 +152,42 @@
   以 60Hz 鼠标事件计算，必然明显掉帧。
 - 建议：只处理本次笔迹的**增量包围盒**（上一位置到当前位置的矩形外扩 `mosaicSize`），掩膜与 mosaicLayer_ 复用同一缓冲不再重建；再叠一个 ~16ms 的合并节流。这样单次代价从 O(W·H) 降到 O(笔迹面积)。
 
+**现状：已修（增量包围盒在 M6 清理的 N-7 落地，本轮复核）。** `updateMosaic(annotation, logicalDirty)` 现在只处理
+`mouseMoveEvent` 传进来的那一段笔迹，掩膜/图层在首次使用时分配一次后复用（见 P2-4）。
+实测：全路径 98ms → 增量 7ms（`probe_mosaic_incremental`，10 checks / 0 failures）。
+**建议里的 16ms 合并节流刻意不做**：`QWidget::update()` 本身就把同一次事件循环内的多次请求合并成一次 paint，
+再加一层定时器只会引入一帧延迟，收益为零。
+
 ### P2-2 Idle 状态每次鼠标移动都全屏重绘
 
 - 位置：`SnapOverlay.cpp:556-562`
 - 现象：`Idle` 分支无条件 `update()`，触发整张虚拟屏背景位图重绘 + 放大镜重建（含 `QImage` 分配、`copy`、`scaled`）。多屏 4K 下每次移动都是几十 MB 的像素搬运。
 - 建议：改为局部更新——`update(oldMagnifierRect.united(newMagnifierRect))`，背景部分用 `WA_OpaquePaintEvent` + 只在需要时重绘；放大镜的 `srcImage` 也可以复用成员缓冲而非每次 new。
 
+**现状：已修（局部更新本轮复核，放大镜缓冲刻意不动）。** Idle 分支现在只重绘 `magnifierRect(old) ∪ magnifierRect(new)`，
+实测占屏幕 8.55%（`probe_partial_repaint`）。`WA_OpaquePaintEvent` 不需要：`paintEvent` 本来就把不透明背景图铺满整块。
+放大镜的 `srcImage` **保持每次新建**：它的尺寸由面板决定（`srcPhysicalW × srcPhysicalH` ≈ 50×47 物理像素，
+放大后 264×204 逻辑像素），与屏幕大小无关，复用它省下的是每帧约一万像素的分配，不值得引入一个需要自己维护尺寸的成员缓冲。
+真正的开销原本在整屏重绘上，已经消除。
+
 ### P2-3 同一份全屏数据存了两份
 
 - 位置：`SnapOverlay.h:54-55`（`backgroundPixmap_` + `backgroundImage_`）
 - 建议：只保留 `QImage`（`QPainter` 可直接画 `QImage`），或按需 `toImage()` 缓存，省掉一半常驻内存。
 
+**现状：已修（本轮复核）。** `backgroundPixmap_` 已不存在，只剩 `SnapOverlay.h` 里的 `backgroundImage_`，
+构造时由 `QPixmap::toImage()` 一次性转换（`QPixmap` 会在 `QImage` 里保留 DPR，所以 `drawImage` 不需要额外处理）。
+
 ### P2-4 每次拖动/缩放结束都重新裁切三张大图
 
 - 位置：`AnnotationLayer.cpp:134-160`（`setBaseImage`，每次 release 都调用）
 - 现象：每次 `setBaseImage` 都重新分配 `baseImage_` / `mosaicLayer_` / `mosaicMask_` 三张选区大小的图。连续拖拽选区会持续抖动内存分配。当前逻辑上是安全的（有标注时会锁定选区、禁止移动缩放，不会出现标注错位），但可以按需分配——只在真正用到马赛克时才建 `mosaicLayer_/mosaicMask_`。
+
+**现状：已修（本轮复核）。** `mosaicLayer_` / `mosaicMask_` 改为在 `updateMosaic()` 里首次真正用到时才分配，
+`setBaseImage()` 只置空它们。`baseImage_` 仍是每次 release 裁一张 —— 这是**必要**的：它是马赛克取平均值的底图，
+延后分配就得同时持有整屏背景，省下的那一次裁剪远不及多出来的常驻内存。
+本轮还顺手补了一个反向问题：图层分配后即使被清空（undo 掉最后一个马赛克）也仍然存在，
+`paint()` 原先只判 `!mosaicLayer_.isNull()`，于是会每帧 blit 一张全选区大小的**全透明**图。现在由 `mosaicInkPresent_` 把关。
 
 ---
 

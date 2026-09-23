@@ -10,7 +10,7 @@
 - Debug 构建：`mingw32-make.exe -C build/Desktop_Qt_6_11_2_MinGW_64_bit_Debug`（**链接前先确认没有 qshot.exe 在跑**，否则 `ld` 报 `Permission denied`）
 - 发布：`bash tools/deploy.sh --build` → `dist/QShot/`（自包含 34MB）；`bash tools/smoke_deploy.sh [--app]` 在部署目录里实跑
 - 静态检查（秒级，不跑 AUTOMOC）：`g++ -std=c++17 -fsyntax-only -Wall -Wextra -Wshadow -Wunused -Isrc -I<Qt>/include{,/QtCore,/QtGui,/QtWidgets} $(find src -name '*.cpp')`
-- 探针：`bash build-review/build_probes.sh [--run] [名字...]`，当前 **21 个目标**
+- 探针：`bash build-review/build_probes.sh [--run] [名字...]`，当前 **23 个目标**（全量 627 checks / 0 failures）
   - ⚠️ 全量 **~4 分钟，必须后台跑**；⚠️ 跑的时候**绝不能编辑该脚本**（bash 边读边执行）
   - ⚠️ 不加 `--run` 自己跑 exe 时，**必须把 Qt 与 MinGW 的 `bin` 加进 `PATH`**，否则 loader 失败被报成**无输出的 `exit=127`**（与「文件不存在」一模一样）
   - ⚠️ `C:/...` 能当编译参数、**不能当命令**，执行用 `cygpath -u`；⚠️ `probe_deploy` 在 `NO_RUN` 里，必须在部署目录跑
@@ -29,6 +29,7 @@
 - 按钮内文字**不要写死字体族**（中文会逐字回退），从 `p.font()` 派生再设字号；工具栏按钮只有 32px 宽，动作文案必须极短，**改文案后必须重跑 `render_pin` 的中英双语断言**。
 - `SettingsDialog` 只读写 `Settings`；热键重注册、写注册表等**副作用一律留在 `ShotApplication`**，经 `Settings` 信号触发。`WinAutoStart` 用 `QSettings(path, NativeFormat)` 直指 Run 键，值必须是**带引号的原生分隔符路径**。
 - **列表类 UI 用 `aboutToShow` 重建**（如 `HistoryMenu`），别维护平行副本。**动作一律按条目 `id` 闭包捕获，不按行号**（行号会静默错位）。
+- **脏区（M7 定的）**：① 一律「宁大勿小」——少一个像素留残影，多几个像素只是多画几笔；② 同一个矩形**只能有一处计算**，绘制与脏区共用（`dimensionBadgeRect()` / `textHintRect()` / `annotationInkMargin()` 都是这么切的）；③ 笔画类工具（`isStrokeTool()`）的脏区**只取最新一段**，取整条路径会让横跨屏幕的笔画涨回整屏；④ 判定「脏区对不对」的断言必须是**「只重绘脏区后的整帧 == 全量重绘」**，不是「等于我手算的矩形」（后者只是把公式抄进测试）。
 - **注释要写「为什么」**：非显然代码都带解释性注释，含实测数字与被否掉的替代方案。
 
 ## 实测过的语义（本项目反复踩的）
@@ -50,9 +51,10 @@
 
 - **路线**：走「全能」路线，计划见 `docs/ROADMAP.md`。本轮 = Phase 0 地基 + Phase 1 出口能力 + Phase 3 打磨；**OCR 与滚动长截图已决策推迟**（评估结论保留在 ROADMAP 第四节）。
 - **M0~M6 全部完成**：拆模块 → 多屏坐标空间（真双屏待人工确认）→ 焦点路由（本机 1 屏无法验证）→ 贴图 + 悬停样式 → 历史记录 → 序号/高亮 → 真图标集 + 工具栏图标集 + 部署 + 设置补项 + 清理。
+- **M7 完成（性能项收尾）**：P2 全节 + R3-6。复核发现 P2-2/P2-3 **早已修好、只是文档没跟上** —— 审查文档的表格会过期，**先复核再动手**。R3-6 = `paintEvent` 按 `event->rect()` 裁剪 + 暗色遮罩从 `subtracted()` 改 4 个互不重叠的 `fillRect` + 四个状态各算脏区（Annotating 下笔画类工具**只取最新一段**）。实测脏区 1%~27%，Dragging 单帧 0.92ms → 0.34ms。详见 `docs/ROADMAP.md` §3.7。
 - **M6 清理项已收尾**：N-7 马赛克增量 ✅（探针抓到一个**既有 bug**：掩码按被裁剪的物理原点平移）；P1-4 单实例保护 ✅；P1-3/6/8 复核后确认早已修掉，只剩 `hotkeyId_` 魔数（已改常量）。
-- 规模：`src/` **6933 行** / 51 个 `.h`+`.cpp`；最大 `SnapOverlay.cpp` 755 行；文案 70 条。
-- **本轮未做**：安装包**从未编译**（本机无 Inno Setup）、代码签名（无证书）、R3-6 局部重绘（刻意不做）。
+- 规模：`src/` **7210 行** / 51 个 `.h`+`.cpp`；最大 `SnapOverlay.cpp` **965 行**（M7 里 +210，几乎全是「为什么这个脏区是对的」的注释）；文案 70 条。
+- **仍未做**：安装包**从未编译**（本机无 Inno Setup）、代码签名（无证书）。
 - 报告：`docs/CODE_REVIEW.md` / `_ROUND2.md` / `_ROUND3.md`。
 - **坐标空间契约（M1 定的，别再搞反）**：`WinWindowDetector` 返回**全局桌面**坐标；`SnapOverlay` 在自己边界处**归一化一次**（`translated(-globalOrigin())`），内部一律 widget 局部。顶层窗口（`ToolbarWidget` / `TextInputWidget` / `PinWindow`）的 `move()`/`pos()` 读的是**全局**坐标。`globalOrigin()` = `mapToGlobal(QPoint(0,0))`，**不要**改成 `screenGeometry_.topLeft()`。
 - **工具栏宽度不是约束**（M5 实测推翻了原计划里的「阻塞项」）：它是**顶层窗口**，钳制在**屏幕**矩形内，与选区无关。8 工具 = 484px。**别再为此做两排布局或溢出菜单。**

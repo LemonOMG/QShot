@@ -74,6 +74,52 @@ private:
     bool textToolArmed() const;
     bool shouldShowTextHint() const;
     QRect textHintRect(const QPoint& mousePos) const;
+    /// textHintRect() at the positions where the badge is actually drawn, empty
+    /// otherwise. The mouse handler needs the *before* position as well as the current
+    /// one, which is why the predicate takes a position rather than reading
+    /// currentMousePos_ the way shouldShowTextHint() does.
+    QRect textHintRectIfShown(const QPoint& mousePos) const;
+
+    // --- dirty regions ---------------------------------------------------------
+    // This widget covers an entire screen, so a bare update() repaints a whole
+    // screen -- 4.1M pixels here, and a drag issues one per mouse move. Each helper
+    // below answers "which part of the screen can this one interaction have
+    // changed", and the mouse handlers pass the union of the answer taken *before*
+    // and *after* the change to update(). They are the only thing standing between
+    // a drag and a full-screen repaint per move, which is why every one of them
+    // deliberately errs on the side of being too large: a region one pixel short
+    // leaves a trail of stale ink behind the cursor, and that is far worse than
+    // painting a few extra pixels.
+
+    /// The "1234 x 567" badge for a selection, in this widget's space.
+    ///
+    /// Shared with paintEvent() rather than computed twice: a badge whose repainted
+    /// rectangle and drawn rectangle disagree would leave one of its corners on
+    /// screen. Same reason textHintRect() exists.
+    QRect dimensionBadgeRect(const QRect& selection) const;
+    /// Everything that depends on the selection's geometry: the dim mask's hole, the
+    /// 2px border, the eight grips that straddle its edges, and the badge.
+    QRect selectionChromeRect(const QRect& selection) const;
+    /// The chrome for whatever currently forms the hole in the dim mask: the
+    /// selection when there is one, otherwise the hovered window's outline.
+    ///
+    /// Taking the union of this before and after a change is what covers the frame
+    /// where a drag crosses the threshold and the hover outline is replaced by a
+    /// selection -- the outline's old position has to be repainted away.
+    QRect activeChromeRect() const;
+    /// The magnifier panel for a cursor position, or an empty rectangle at the
+    /// positions where paintEvent() does not draw it.
+    QRect magnifierRect(const QPoint& mousePos) const;
+    /// The area the in-progress annotation's ink occupies, in this widget's space.
+    ///
+    /// `onlyLastSegment` restricts it to the tail the most recent mouse move added.
+    /// That is the whole difference for the three stroke tools -- the pen, the highlighter
+    /// and the mosaic append one segment per move and repaint the rest of the path
+    /// identically -- and using the whole path for them would let a stroke across the
+    /// screen grow its own dirty region back to the whole screen. The other five tools are
+    /// redrawn from their two points, so for them every move does change the whole shape
+    /// and the flag makes no difference.
+    QRect annotationInkRect(const Annotation& a, bool onlyLastSegment = false) const;
 
     void updateCursorForPos(const QPoint& pos);
     void copyToClipboard();
