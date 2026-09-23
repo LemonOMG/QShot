@@ -179,6 +179,19 @@ src/overlay/ToolbarWidget.cpp:339:94: warning: unused parameter 'isAction' [-Wun
 
 ### R3-9（P3）
 
+> **已全部解决（2026-09-23 逐条复核确认）。** 下面保留发现时的描述，逐条对照如下：
+>
+> | 发现时的问题 | 现状 | 落在哪 |
+> | --- | --- | --- |
+> | `SnapOverlay.cpp` 每次鼠标按下 `qDebug()` 打印完整状态 | ✅ 已删（`SnapOverlay.cpp` 连 `<QDebug>` 都不再包含）。其余文件的 `<QDebug>` 保留 —— 它们喂的是 `qWarning()`，属于错误路径该有的输出 | M6 清理 |
+> | `setBaseImage()` 在 `physicalRect` 为空时**不更新** `baseImage_`，保留上一张选区图 | ✅ 已修：显式 `baseImage_ = QImage()`，注释写明「留着上一张裁剪会让后续 `updateMosaic()` 采错像素」 | M6 清理 |
+> | `magnifierLayout()` 每次都构造 `QFontDatabase::systemFont()` + `QFontMetrics`（每次 mouseMove 调 2 次 + paintEvent 1 次） | ✅ 已修：`panel::fixedFontMetrics()` / `uiFontMetrics()` 是函数内静态 | M4（见 `ROADMAP.md` §1.3） |
+> | `resources/` 空目录、无 `qt_add_resources` → 托盘图标是 32×32 蓝方块；`Alt+A` 硬编码 | ✅ 已修：`resources/` 有 `qshot.ico`（8 个尺寸）+ `resources.qrc`，托盘取 `:/icons/qshot.ico`；`Alt+A` 变成 `Settings.cpp` 的 `kDefaultHotKey`（是**默认值**，不再是散落的字面量） | M6 图标 + 部署 |
+> | `ShotApplication.cpp` 两处重复 `setGeometry(screen->geometry())` | ✅ 已删：全仓只剩 `SnapOverlay` 构造函数里那一处 | M6 清理 |
+>
+> **这一节的教训与 P1-3/P1-6 完全一样**：审查文档的表格会过期，**先复核再动手**。六条里有四条是在别的轮次里顺手修掉的，
+> 文档却一直挂着「仍未处理」—— 而「以为还有活要干」和「以为活已经干完」这两种误读的代价是一样的。
+
 - `SnapOverlay.cpp:464` 每次鼠标按下都 `qDebug()` 打印完整状态；`ShotApplication` 里也有多处 —— 生产噪音
 - `AnnotationLayer.cpp:170-173` `setBaseImage()` 在 `physicalRect` 为空时**不更新** `baseImage_`，保留上一张选区图 → 后续 `updateMosaic()` 拿错底图（配合 R3-4 可达）
 - `SnapOverlay.cpp:363-365` `magnifierLayout()` 每次都构造 `QFontDatabase::systemFont()` + `QFontMetrics`，而它每次 mouseMove 被调 2 次、paintEvent 再调 1 次 → 缓存成成员变量
@@ -308,7 +321,9 @@ src/overlay/ToolbarWidget.cpp:339:94: warning: unused parameter 'isAction' [-Wun
 
 R3-4（多屏坐标空间统一，需先定约定 + 双屏实测）、R3-6（四个状态的局部重绘）、R3-9 剩余项，以及上一轮遗留的 N-2、N-7、P1-3/4/6/8、P3 仓库残留。
 
-> 后续：N-2 / N-7 / P1-3 / P1-4 / P1-6 / P1-8 / P3 已在 M6 清理完成；**R3-6 已在 2026-09-23 的性能项收尾轮完成**。此处只剩 R3-4（需双屏）与 R3-9 的少量剩余项。
+> 后续（截至 2026-09-23）：N-2 / N-7 / P1-3 / P1-4 / P1-6 / P1-8 / P3 已在 M6 清理完成；
+> **R3-6 已在性能项收尾轮完成**；**R3-9 六条已逐条复核确认全部解决**（见本节 R3-9 的状态块）。
+> 此处**只剩 R3-4**，且它需要真双屏人工确认，不是代码问题。
 
 ## 八、UI 可用性修复（用户反馈驱动）
 
@@ -364,7 +379,8 @@ R3-4（多屏坐标空间统一，需先定约定 + 双屏实测）、R3-6（四
 
 R3-4、R3-6、R3-9 剩余项，以及上一轮遗留的 N-2、N-7、P1-3/4/6/8、P3 仓库残留，均未变动。
 
-> **后续（截至 2026-09-23）**：除 R3-4（需真双屏人工确认）与 R3-9 的少量剩余项外，其余都已收尾 ——
-> N-2 / N-7 / P1-3 / P1-4 / P1-6 / P1-8 / P3 见 M6 清理，**R3-6 见性能项收尾轮**（本节 R3-6 的状态块、
-> `CODE_REVIEW.md` P2 各条的「现状」块、`ROADMAP.md` §3.7）。
+> **后续（截至 2026-09-23）**：除 R3-4（需真双屏人工确认，非代码问题）外，**其余全部已收尾** ——
+> N-2 / N-7 / P1-3 / P1-4 / P1-6 / P1-8 / P3 见 M6 清理，**R3-6 见性能项收尾轮**
+> （本节 R3-6 的状态块、`CODE_REVIEW.md` P2 各条的「现状」块、`ROADMAP.md` §3.7），
+> **R3-9 见本节 R3-9 的状态块**（六条逐条复核，全部早已解决）。
 
