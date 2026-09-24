@@ -23,7 +23,11 @@
 | 已有基础设施 | `Settings`（QSettings + 信号）、`Strings`（中英 70 条）、`PlatformFactory`（平台装配 + 判空，5 个实现）、`ImageExport`（复制 + 另存 + 静默保存）、`HistoryStore`（落盘 + 双预算淘汰）、`ToolbarIcons`（八工具字形，代码绘制） |
 | 缺失能力 | 滚动长截图、OCR |
 
-**已覆盖 2 / 6 个用户场景**（选中区标注导出、单击抓整窗）。
+**已覆盖的用户场景**：选中区标注导出、单击抓整窗（完整能力清单见上表）。
+
+> 这里原本写的是「已覆盖 **2 / 6** 个用户场景」。那 6 个场景**全仓没有任何地方定义过** ——
+> `git log -S` 只能追到首次提交 `6d0ec05`，与上表的「已有能力」也对不上。2026-09-24 删除该比值。
+> 需要覆盖率数字时，请先把场景清单写下来再算，不要留一个没有出处的分母。
 
 ---
 
@@ -330,7 +334,7 @@
 | --- | --- |
 | 托盘图标 | ✅ 已完成（见 3.1）—— 不再是 `pixmap.fill(Qt::blue)` |
 | 部署脚本 | ✅ 已完成（见 3.2）—— 暂存目录经闭环校验 + 运行期验证 |
-| 安装包 | ⚠️ 脚本已写，**从未编译过**（见 3.3）—— 本机没有 Inno Setup |
+| 安装包 | ⚠️ 脚本已写，**从未编译过**（见 3.3）—— 2026-09-24 试装 Inno Setup，本会话跑不起 GUI 安装器 |
 | 工具栏图标 | ✅ 已完成（见 3.4）—— 抽出共享图标集 `src/overlay/ToolbarIcons.cpp`，八工具图标按选中态着色；顺手修掉两个真读错的形状 |
 | 设置补项 | ✅ 已完成（见 3.5）—— 「保存时不再询问」「复制时同时存一份」两个开关，**均默认关闭**；另抽出 `ImageExport` 的共享编码入口 |
 | 清理 | ✅ 已完成（见 3.6）—— N-7 马赛克增量（**探针抓到一个既有 bug**）+ P1-4 单实例保护 + P1-3/6/8 复核 |
@@ -383,11 +387,27 @@
 
 > ⚠️ 这一步踩到一个小坑：把 PATH 缩到 Windows 系统目录之后，`timeout` 这个名字解析到的是 **`C:\Windows\System32\timeout.exe`**，它只认 `/t`，直接给数字会报「无效语法」—— 与部署本身毫无关系的报错。必须写 `/usr/bin/timeout` 绝对路径。探针那一半不涉及这个问题（它不需要超时）。
 
-### 3.3 安装包 —— ⚠️ 已写，从未编译
+### 3.3 安装包 —— ⚠️ 已写，从未编译（2026-09-24 试过，被环境挡住）
 
 `tools/installer/qshot.iss`。
 
 **先说清楚：这个脚本没有编译过、没有运行过。** 本机没有 Inno Setup（`Program Files` 下无 `ISCC.exe`，PATH 上无 `iscc`，已直接查过），所以它只被写出来并被静态检查过。**这是整条链上唯一未验证的一环** —— 其余部分都实际跑过。第一次编译时请把它当成待修的草稿，而不是已验证的产物。
+
+**2026-09-24：试过一次，结论是「装了也跑不起来」。** 官方 release 的 Inno Setup 6.7.3 已下载到 `%LOCALAPPDATA%\Temp\qshot-inno\`（本体校验过：`MZ` 头 + `Inno Setup Setup Data` 标记，不是跳转页），以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-` 运行。实测：
+
+- 自解压引导**是好的** —— `%TEMP%` 里出现 `is-*.tmp` 解包目录，`tasklist` 里 `innosetup-6.7.3.exe` 和解出的 `innosetup-6.7.3.tmp` 都在；
+- 真正的 setup 阶段**无限期挂住** —— `/LOG` 指定的文件始终没生成、没有 `consent.exe`、**开关沙箱行为完全一致**（所以不是沙箱）；
+- 账号是**标准用户**（`whoami /groups` 里没有 `Administrators`）且 UAC 开启（`EnableLUA=0x1`），所以这不是一个等不到的提权提示。**最可能的原因是这个会话没有交互式桌面，而 GUI 子系统的安装器需要。**
+- 解包绕行也不通：Bandizip 7.46 对 Inno 格式报 `Unknown archive`，本机无 7-Zip、无 innoextract。
+
+**剩余一步需要人工**，在交互式终端里跑一次即可（按用户安装，不需要管理员）：
+
+```bat
+%LOCALAPPDATA%\Temp\qshot-inno\innosetup-6.7.3.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
+"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" tools\installer\qshot.iss
+```
+
+版本注意：**6.7.3 是最新的 6.x**，与本节写作依据的 6.x 语义一致；**7.1.0 也已发布，未经测试**。
 
 三个刻意、且最容易被「好心改错」的决定：
 

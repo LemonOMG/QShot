@@ -23,7 +23,8 @@ bash tools/smoke_deploy.sh        # 在打包目录里实际启动一次，验�
 ```
 
 产物在 `dist/QShot/`，自包含，可以直接拷到没有装 Qt 的机器上运行。安装包脚本见
-`tools/installer/qshot.iss` —— **它从未编译过**，本机没有 Inno Setup，详见 `docs/ROADMAP.md` 第 3.3 节。
+`tools/installer/qshot.iss` —— **它从未编译过**：本机没有 Inno Setup，且 2026-09-24 试装时被环境挡住
+（本会话跑不起 GUI 安装器；剩余一步的命令留在脚本头部注释里）。详见 `docs/ROADMAP.md` 第 3.3 节。
 
 ## 开发辅助
 

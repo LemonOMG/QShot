@@ -11,6 +11,28 @@
 ;    verifies the staging folder, and tools/smoke_deploy.sh starts it from a PATH with no Qt
 ;    on it. This file is the only unverified link in the chain.
 ;
+;    2026-09-24 -- an attempt to close that gap failed, and the reason is worth recording.
+;    Inno Setup 6.7.3 was downloaded from the official release page and run with
+;    /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-. It extracts -- a %TEMP%\is-*.tmp folder
+;    appears, and both innosetup-6.7.3.exe and the extracted innosetup-6.7.3.tmp show up in
+;    tasklist -- and then hangs indefinitely in the setup phase: no /LOG file is ever written,
+;    no consent.exe appears, and the behaviour is identical with the sandbox on and off. The
+;    account is a standard user (not in Administrators) with UAC on, so this is not an
+;    elevation prompt. The likely cause is that the session has no interactive desktop, which
+;    a GUI-subsystem installer needs. Unpacking ISCC.exe as a workaround is also out: Bandizip
+;    7.46 reports "Unknown archive" on the Inno format, and neither 7-Zip nor innoextract is
+;    installed. tools/verify_iss.py is what stands in for the compile meanwhile.
+;
+;    To finish the job, run this once in your own terminal. Inno Setup installs per-user to
+;    %LOCALAPPDATA%\Programs\Inno Setup 6, so no admin rights are needed:
+;
+;        %LOCALAPPDATA%\Temp\qshot-inno\innosetup-6.7.3.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
+;        "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" tools\installer\qshot.iss
+;
+;    Note the version split: 6.7.3 is the latest 6.x and matches the 6.x semantics this script
+;    is written against (see the ArchitecturesAllowed note below). 7.1.0 also exists and has
+;    never been tested against this script.
+;
 ; Three choices below are deliberate and are the ones most likely to be "fixed" wrongly:
 ;
 ;   * Per-user install. PrivilegesRequired=lowest with {autopf} resolving to
