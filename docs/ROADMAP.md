@@ -334,7 +334,7 @@
 | --- | --- |
 | 托盘图标 | ✅ 已完成（见 3.1）—— 不再是 `pixmap.fill(Qt::blue)` |
 | 部署脚本 | ✅ 已完成（见 3.2）—— 暂存目录经闭环校验 + 运行期验证 |
-| 安装包 | ⚠️ 脚本已写，**从未编译过**（见 3.3）—— 2026-09-24 试装 Inno Setup，本会话跑不起 GUI 安装器 |
+| 安装包 | ✅ **已编译**（见 3.3）—— 2026-09-24 首次编译零错误零警告，产物 `dist/QShot-0.1.0-setup.exe`；静默安装 + 安装目录内探针 10/0 |
 | 工具栏图标 | ✅ 已完成（见 3.4）—— 抽出共享图标集 `src/overlay/ToolbarIcons.cpp`，八工具图标按选中态着色；顺手修掉两个真读错的形状 |
 | 设置补项 | ✅ 已完成（见 3.5）—— 「保存时不再询问」「复制时同时存一份」两个开关，**均默认关闭**；另抽出 `ImageExport` 的共享编码入口 |
 | 清理 | ✅ 已完成（见 3.6）—— N-7 马赛克增量（**探针抓到一个既有 bug**）+ P1-4 单实例保护 + P1-3/6/8 复核 |
@@ -387,27 +387,51 @@
 
 > ⚠️ 这一步踩到一个小坑：把 PATH 缩到 Windows 系统目录之后，`timeout` 这个名字解析到的是 **`C:\Windows\System32\timeout.exe`**，它只认 `/t`，直接给数字会报「无效语法」—— 与部署本身毫无关系的报错。必须写 `/usr/bin/timeout` 绝对路径。探针那一半不涉及这个问题（它不需要超时）。
 
-### 3.3 安装包 —— ⚠️ 已写，从未编译（2026-09-24 试过，被环境挡住）
+### 3.3 安装包 —— ✅ 已编译（2026-09-24 首次编译，零错误）
 
 `tools/installer/qshot.iss`。
 
-**先说清楚：这个脚本没有编译过、没有运行过。** 本机没有 Inno Setup（`Program Files` 下无 `ISCC.exe`，PATH 上无 `iscc`，已直接查过），所以它只被写出来并被静态检查过。**这是整条链上唯一未验证的一环** —— 其余部分都实际跑过。第一次编译时请把它当成待修的草稿，而不是已验证的产物。
+**2026-09-24：首次编译成功，零错误零警告。**
 
-**2026-09-24：试过一次，结论是「装了也跑不起来」。** 官方 release 的 Inno Setup 6.7.3 已下载到 `%LOCALAPPDATA%\Temp\qshot-inno\`（本体校验过：`MZ` 头 + `Inno Setup Setup Data` 标记，不是跳转页），以 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-` 运行。实测：
-
-- 自解压引导**是好的** —— `%TEMP%` 里出现 `is-*.tmp` 解包目录，`tasklist` 里 `innosetup-6.7.3.exe` 和解出的 `innosetup-6.7.3.tmp` 都在；
-- 真正的 setup 阶段**无限期挂住** —— `/LOG` 指定的文件始终没生成、没有 `consent.exe`、**开关沙箱行为完全一致**（所以不是沙箱）；
-- 账号是**标准用户**（`whoami /groups` 里没有 `Administrators`）且 UAC 开启（`EnableLUA=0x1`），所以这不是一个等不到的提权提示。**最可能的原因是这个会话没有交互式桌面，而 GUI 子系统的安装器需要。**
-- 解包绕行也不通：Bandizip 7.46 对 Inno 格式报 `Unknown archive`，本机无 7-Zip、无 innoextract。
-
-**剩余一步需要人工**，在交互式终端里跑一次即可（按用户安装，不需要管理员）：
-
-```bat
-%LOCALAPPDATA%\Temp\qshot-inno\innosetup-6.7.3.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
-"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" tools\installer\qshot.iss
+```
+Successful compile (7.406 sec). Resulting Setup program filename is:
+D:\project\QShot\dist\QShot-0.1.0-setup.exe
 ```
 
-版本注意：**6.7.3 是最新的 6.x**，与本节写作依据的 6.x 语义一致；**7.1.0 也已发布，未经测试**。
+Inno Setup **6.7.3** 装在 `D:\Program Files (x86)\Inno Setup 6\`。13 个载荷文件全部压缩进去，产物 **12,025,558 字节**。这个「写了但从未执行过」的脚本**第一次编译就不需要任何修改** —— 原先那句「第一次编译请把它当成待修的草稿」没有兑现，是件好事。
+
+**安装也实测过**，而且刻意做成不留痕迹：`/NOICONS` + 一个临时 `/DIR`。装完 11 个载荷文件 + `unins000.exe` 都在，然后把部署探针跑进**那个安装目录**：
+
+```
+STAGE_DIR=/c/Users/<user>/AppData/Local/Temp/qshot-installtest bash tools/smoke_deploy.sh
+→ 10 checks, 0 failures
+```
+
+`platformName == windows`（平台插件从安装目录加载成功）、`TranslationsPath` 恰好等于 `<安装目录>/translations`、被裁掉的 `svg`/`gif` 仍然不在、`qtbase_zh_CN.qm` 真的把 `OK` 译成「确定」。**这证明安装器铺出来的那份拷贝是自包含且可用的**，而不只是「文件被复制过去了」。
+
+### ⚠️ 踩到的坑：Git Bash 会把 `/` 开头的参数改写成路径
+
+**这一条害我做出了一个错误的诊断，值得单独记。**
+
+一开始用 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-` 调 Inno Setup 自己的安装器，它**无限期挂住**：不写 `/LOG`、没有 `consent.exe`、开关沙箱行为一致。当时的结论是「这个会话没有交互式桌面，GUI 子系统安装器需要它」，还把这条写进了若干文档。**那个结论是错的。**
+
+真因用一个回声程序实测出来：
+
+```
+$ python -c "import sys;print(sys.argv[1:])" /VERYSILENT /LOG=x.log
+['C:/Users/18791/.workbuddy-ai/binaries/PortableGit/versions/1.2.0/VERYSILENT',
+ 'C:/Users/18791/.workbuddy-ai/binaries/PortableGit/versions/1.2.0/LOG=x.log']
+```
+
+Git Bash 把每个 `/` 开头的参数改写成了 PortableGit 目录下的路径。安装器于是收到垃圾参数 → 弹「无效命令行参数」对话框 → 而 `/SUPPRESSMSGBOXES` **在同一次改写里也失效了**，压不住这个框 → 进程停在那里等人点确定，永远。**「无日志 + 无 consent.exe + 挂死」这三个现象它全能解释。**
+
+正确写法：
+
+```bash
+MSYS_NO_PATHCONV=1 ./QShot-0.1.0-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
+```
+
+**教训**：`taskkill /F`、`reg query /v`、`find /maxdepth` 这类**原生命令行工具**在 Git Bash 里都有同一个问题。报「无效参数/选项」时先怀疑参数被改写，而不是工具本身；而「挂死且无任何输出」时，也先怀疑「某个被改写的开关让它弹了个压不住的框」。
 
 三个刻意、且最容易被「好心改错」的决定：
 

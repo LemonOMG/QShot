@@ -66,7 +66,7 @@
   另有 N-1 与 R3-4 代码已完成，但**需要真双屏人工确认**（本机 1 块屏）。
   → **反复出现的教训：审查文档的表格会过期，先复核再动手。** 已在 M7 后用「唯一索引 + 校验器 + 规则」把这条结构性地解决掉。
 - 规模：`src/` **7210 行** / 51 个 `.h`+`.cpp`；最大 `SnapOverlay.cpp` **965 行**（M7 里 +210，几乎全是「为什么这个脏区是对的」的注释）；文案 70 条。
-- **仍未做**：安装包**从未编译**（本机无 Inno Setup；2026-09-24 试装被环境挡住 —— 本会话跑不起 GUI 安装器，剩余一步需人工）、代码签名（无证书）。
+- **安装包**：2026-09-24 **首次编译成功**（Inno Setup 6.7.3，装在 `D:\Program Files (x86)\Inno Setup 6\`），产物 `dist/QShot-0.1.0-setup.exe`（12.0 MB）；静默装到临时目录后**在该目录内**跑 `smoke_deploy.sh` 得 **10 checks / 0 failures**。⚠️ **从 Git Bash 调它必须加 `MSYS_NO_PATHCONV=1`** —— 否则 `/VERYSILENT` 被改写成 `C:/.../PortableGit/versions/1.2.0/VERYSILENT`，安装器弹「无效命令行参数」框而 `/SUPPRESSMSGBOXES` 同样被改写、压不住 → 无限挂起（无日志、无 consent.exe），看着像「本会话跑不起 GUI 安装器」。**仍未做**：代码签名（无证书）。
 - 报告：`docs/CODE_REVIEW.md` / `_ROUND2.md` / `_ROUND3.md`。
 - **坐标空间契约（M1 定的，别再搞反）**：`WinWindowDetector` 返回**全局桌面**坐标；`SnapOverlay` 在自己边界处**归一化一次**（`translated(-globalOrigin())`），内部一律 widget 局部。顶层窗口（`ToolbarWidget` / `TextInputWidget` / `PinWindow`）的 `move()`/`pos()` 读的是**全局**坐标。`globalOrigin()` = `mapToGlobal(QPoint(0,0))`，**不要**改成 `screenGeometry_.topLeft()`。
 - **工具栏宽度不是约束**（M5 实测推翻了原计划里的「阻塞项」）：它是**顶层窗口**，钳制在**屏幕**矩形内，与选区无关。8 工具 = 484px。**别再为此做两排布局或溢出菜单。**

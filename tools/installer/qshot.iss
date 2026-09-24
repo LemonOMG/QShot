@@ -3,35 +3,44 @@
 ;   Build the installer:      iscc tools\installer\qshot.iss
 ;   Stage the payload first:  bash tools/deploy.sh --build
 ;
-; !! THIS SCRIPT HAS NEVER BEEN COMPILED.
-;    Inno Setup is not installed on the machine this was written on -- no ISCC.exe under
-;    Program Files, nothing named iscc on PATH -- so it has been written and read carefully
-;    but never executed. Treat the first compile as the real test and expect to correct a
-;    path or a flag. Everything it consumes has been run: tools/deploy.sh assembles and
-;    verifies the staging folder, and tools/smoke_deploy.sh starts it from a PATH with no Qt
-;    on it. This file is the only unverified link in the chain.
+; !! COMPILED, 2026-09-24 -- clean, first try, no edits needed.
+;    ISCC.exe (Inno Setup 6.7.3, D:\Program Files (x86)\Inno Setup 6\) produced
+;    dist\QShot-0.1.0-setup.exe with 0 errors and 0 warnings, so the "expect to correct a path
+;    or a flag" caveat this header used to carry turned out not to be needed. What has NOT been
+;    exercised: the wizard by hand, the desktop / start-menu icons, the autostart task, and the
+;    uninstaller's UI. What HAS: a silent per-user install into a throwaway directory, whose
+;    payload then passed tools/smoke_deploy.sh *from inside that directory* -- 10 checks /
+;    0 failures (platform plugin loaded, TranslationsPath == <appdir>\translations, the pruned
+;    formats still pruned, qtbase_zh_CN actually translating). tools/verify_iss.py (38 checks)
+;    is still the fast no-compile check.
 ;
-;    2026-09-24 -- an attempt to close that gap failed, and the reason is worth recording.
-;    Inno Setup 6.7.3 was downloaded from the official release page and run with
-;    /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-. It extracts -- a %TEMP%\is-*.tmp folder
-;    appears, and both innosetup-6.7.3.exe and the extracted innosetup-6.7.3.tmp show up in
-;    tasklist -- and then hangs indefinitely in the setup phase: no /LOG file is ever written,
-;    no consent.exe appears, and the behaviour is identical with the sandbox on and off. The
-;    account is a standard user (not in Administrators) with UAC on, so this is not an
-;    elevation prompt. The likely cause is that the session has no interactive desktop, which
-;    a GUI-subsystem installer needs. Unpacking ISCC.exe as a workaround is also out: Bandizip
-;    7.46 reports "Unknown archive" on the Inno format, and neither 7-Zip nor innoextract is
-;    installed. tools/verify_iss.py is what stands in for the compile meanwhile.
+;    Compile with:
+;        "D:\Program Files (x86)\Inno Setup 6\ISCC.exe" tools\installer\qshot.iss
 ;
-;    To finish the job, run this once in your own terminal. Inno Setup installs per-user to
-;    %LOCALAPPDATA%\Programs\Inno Setup 6, so no admin rights are needed:
+;    *** FROM GIT BASH, PROTECT EVERY /-PREFIXED ARGUMENT WITH MSYS_NO_PATHCONV=1. ***
+;    This is not a style preference and it is not about this script. Git Bash rewrites arguments
+;    starting with "/" into Windows paths, so `/VERYSILENT` arrives at the installer as
+;    `C:/Users/<user>/.workbuddy-ai/binaries/PortableGit/versions/1.2.0/VERYSILENT` -- measured
+;    with a trivial argv-echoing program, not inferred. The installer then raises an "invalid
+;    command line parameters" dialog, and because `/SUPPRESSMSGBOXES` was mangled in the same
+;    pass it cannot suppress it, so the process waits forever: no /LOG file, no consent.exe, and
+;    both the parent exe and the extracted .tmp sitting in tasklist. That presents as "this
+;    session cannot run GUI installers", and it sent a whole debugging session down the wrong
+;    path -- a missing interactive desktop was blamed for it. The correct form is:
 ;
-;        %LOCALAPPDATA%\Temp\qshot-inno\innosetup-6.7.3.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
-;        "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" tools\installer\qshot.iss
+;        MSYS_NO_PATHCONV=1 ./QShot-0.1.0-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
 ;
-;    Note the version split: 6.7.3 is the latest 6.x and matches the 6.x semantics this script
-;    is written against (see the ArchitecturesAllowed note below). 7.1.0 also exists and has
-;    never been tested against this script.
+;    A silent install test that leaves nothing behind -- /NOICONS plus a throwaway /DIR, so it
+;    neither disturbs a real installation nor adds a desktop icon:
+;
+;        MSYS_NO_PATHCONV=1 ./QShot-0.1.0-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART \
+;            /SP- /NOICONS "/DIR=$LOCALAPPDATA\Temp\qshot-installtest"
+;        STAGE_DIR=/c/Users/<user>/AppData/Local/Temp/qshot-installtest bash tools/smoke_deploy.sh
+;        MSYS_NO_PATHCONV=1 "$LOCALAPPDATA/Temp/qshot-installtest/unins000.exe" \
+;            /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+;
+;    Inno Setup 7.x exists and has never been tested against this script; 6.7.3 is what the
+;    script's 6.x semantics were written against (see the ArchitecturesAllowed note below).
 ;
 ; Three choices below are deliberate and are the ones most likely to be "fixed" wrongly:
 ;
