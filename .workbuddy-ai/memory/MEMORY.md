@@ -10,11 +10,17 @@
 - Debug 构建：`mingw32-make.exe -C build/Desktop_Qt_6_11_2_MinGW_64_bit_Debug`（**链接前先确认没有 qshot.exe 在跑**，否则 `ld` 报 `Permission denied`）
 - 发布：`bash tools/deploy.sh --build` → `dist/QShot/`（自包含 34MB）；`bash tools/smoke_deploy.sh [--app]` 在部署目录里实跑
 - 静态检查（秒级，不跑 AUTOMOC）：`g++ -std=c++17 -fsyntax-only -Wall -Wextra -Wshadow -Wunused -Isrc -I<Qt>/include{,/QtCore,/QtGui,/QtWidgets} $(find src -name '*.cpp')`
-- 探针：`bash build-review/build_probes.sh [--run] [名字...]`，当前 **23 个目标**（全量 627 checks / 0 failures）
-  - ⚠️ 全量 **~4 分钟，必须后台跑**；⚠️ 跑的时候**绝不能编辑该脚本**（bash 边读边执行）
-  - ⚠️ 不加 `--run` 自己跑 exe 时，**必须把 Qt 与 MinGW 的 `bin` 加进 `PATH`**，否则 loader 失败被报成**无输出的 `exit=127`**（与「文件不存在」一模一样）
-  - ⚠️ `C:/...` 能当编译参数、**不能当命令**，执行用 `cygpath -u`；⚠️ `probe_deploy` 在 `NO_RUN` 里，必须在部署目录跑
-  - 断言总数由脚本自己汇总，**别用 `| tail` 看结尾**（会静默丢掉前半段，剩下的和看着权威但是错的）。moc 按**类名 glob** 定位，别写 hash 目录
+- 探针：**已并入 CMake / CTest**（2026-09-24）。旧脚本 `build-review/build_probes.sh` **已删除** —— 两套构建同一批源文件就是「同一个东西两处维护」
+  - `ctest --test-dir build/Desktop_Qt_6_11_2_MinGW_64_bit_Debug [--output-on-failure]` → **19 个测试 / 627 条断言**，全量约 1 分钟
+  - ⚠️ 判据是每个测试必须打印 `N checks, 0 failures`（`PASS_REGULAR_EXPRESSION`）。汇总行是返回前最后一行，匹配到它就等于「跑到末尾且零失败」—— **比退出码更强**。只看退出码会让「一条输出都没有」的探针静默通过：`probe_quiet_save` 的 29 条断言曾长期一条都不打印却 `exit=0`，旧脚本因此报 **598 而非 627** 且显示全绿
+  - ⚠️ 该正则**绝不能加 `^...$` 锚点** —— CTest 对**整段**输出做一次匹配、不是逐行，带锚点会误杀每一个会打印检查行的探针（实测 19 个测试全红）
+  - ⚠️ `ctest` 自己把 Qt 与 MinGW 的 `bin` 注入测试环境（`ENVIRONMENT_MODIFICATION`），**不需要先 export PATH**；「无输出的 `exit=127`」那个坑从根上消失
+  - 源码清单收进静态库 `qshot_core`（只写一次），moc 交给 AUTOMOC —— 消灭了「漏 moc 文件」和「指向已消失的 hash 目录」两类反复错误
+  - `probe_deploy` 不入 CTest（必须在部署目录内跑，走 `tools/smoke_deploy.sh`）；`probe_settings_autostart` 带 `side-effects` 标签（读写真实 HKCU Run 键，先存后恢复）
+  - `cmake --build <dir> --target render_evidence` 重生成目视证据 PNG；`--target archaeology` 构建 20 个历史一次性探针（默认不构建）
+  - ⚠️ `set_tests_properties` 是 `属性 值` 成对的：列表型属性要**先放进变量再整体传**，否则最后一个值成了没属性名的孤儿，报无用的 `incorrect number of arguments`
+  - ⚠️ 探针结尾**必须显式 `fflush(stdout)`**（stdout 重定向到管道时全缓冲，进程退出不一定冲刷它）
+- ⚠️ **`build-review/` 是源码目录**：`.gitignore` 的 `build-*/`（本意是 CMake 构建树）曾把它整个吞掉 —— 45 个源文件 + 脚本 + 全部证据 PNG 在整个项目历史里都是未跟踪状态。靠紧随其后的 `!build-review/` 救回；`build-review/*.png` 仍忽略（渲染产出，可再生）
 - 本机 **1 块屏** `1707x1067`、**dpr=1.5**（分数缩放是默认路径，不是边缘情况）
 
 ## 项目约定

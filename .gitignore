@@ -1,6 +1,21 @@
-# CMake build directories
-build/
-build-*/
+# CMake build directories. The leading slash is load-bearing, not style: without it the
+# pattern matches at *every* level, and `build-*/` quietly excluded two source directories
+# three levels down as well -- .agents/skills/build-verify/ and .agents/skills/building-data-apps/.
+# Neither had a single tracked file. Anchoring keeps the rule to the repository root, where
+# the build trees actually are.
+/build/
+/build-*/
+# build-review/ is the verification suite's source directory, not a build tree, but
+# `build-*` cannot tell the difference -- and it matched this one too. Every probe source
+# and the build script sat untracked for the project's entire history because of it. The
+# negation has to come after the glob it corrects, and git only re-includes the directory
+# because its parent (the repository root) is not itself excluded. Check it with:
+#     git check-ignore -v build-review/probe_partial_repaint.cpp
+!build-review/
+# The PNGs the render scaffolds write. They are regenerated, never edited, and the
+# render_evidence target reproduces them from source -- binary churn in the history buys
+# nothing. The probe sources and the shell scripts stay tracked.
+build-review/*.png
 CMakeCache.txt
 CMakeFiles/
 CMakeScripts/

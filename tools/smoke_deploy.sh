@@ -7,7 +7,7 @@
 #
 # Requires the folder to exist first:  bash tools/deploy.sh --build
 #
-# Why the probe has to be copied in rather than run from the temp directory it is built into:
+# Why the probe has to be copied in rather than run from the build tree it is built into:
 # Qt resolves its plugin and translation directories from QLibraryInfo's prefix, which for a
 # deployed application is derived from the location of Qt6Core.dll. Run the same binary from
 # anywhere else and Qt finds the *installed* Qt instead, so the probe would report on the Qt
@@ -25,8 +25,13 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STAGE_DIR="${STAGE_DIR:-$ROOT/dist/QShot}"
-PROBE_OUT="${PROBE_OUT:-$(cygpath -m "$HOME")/AppData/Local/Temp/qshot-probe}"
 SMOKE_SECONDS="${SMOKE_SECONDS:-6}"
+
+# probe_deploy is built by CMake, like every other probe. build-review/build_probes.sh used
+# to do it with a hand-written g++ command line; keeping two build paths for the same
+# sources meant every change to the probe set had to be made in both, so that script is
+# gone. Override BUILD_DIR if your build tree is somewhere else.
+BUILD_DIR="${BUILD_DIR:-$ROOT/build/Desktop_Qt_6_11_2_MinGW_64_bit_Debug}"
 
 RUN_APP=0
 for arg in "$@"; do
@@ -36,7 +41,6 @@ for arg in "$@"; do
     esac
 done
 
-PROBE="$PROBE_OUT/probe_deploy.exe"
 DEPLOYED="$STAGE_DIR/probe_deploy.exe"
 
 if [ ! -f "$STAGE_DIR/qshot.exe" ]; then
@@ -44,9 +48,26 @@ if [ ! -f "$STAGE_DIR/qshot.exe" ]; then
     exit 2
 fi
 
-echo "== building probe_deploy"
-bash "$ROOT/build-review/build_probes.sh" probe_deploy
+# Fall back to any configured build tree rather than failing on a hard-coded name, which is
+# really just a Qt Creator convention. Nothing is configured at all is still an error worth
+# naming explicitly -- the alternative is a confusing "target not found" from cmake.
+if [ ! -f "$BUILD_DIR/CMakeCache.txt" ]; then
+    found=""
+    for candidate in "$ROOT"/build/*/; do
+        if [ -f "$candidate/CMakeCache.txt" ]; then found="${candidate%/}"; break; fi
+    done
+    if [ -z "$found" ]; then
+        echo "smoke_deploy: no configured build directory under $ROOT/build" >&2
+        echo "              configure one with cmake, or set BUILD_DIR" >&2
+        exit 2
+    fi
+    BUILD_DIR="$found"
+fi
 
+echo "== building probe_deploy in $BUILD_DIR"
+cmake --build "$BUILD_DIR" --target probe_deploy
+
+PROBE="$BUILD_DIR/probe_deploy.exe"
 [ -f "$(cygpath -u "$PROBE")" ] || { echo "smoke_deploy: $PROBE was not produced" >&2; exit 1; }
 
 # Removed on any exit, so an interrupted run cannot leave a stray executable in the folder

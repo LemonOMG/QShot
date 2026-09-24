@@ -222,6 +222,7 @@
 
 - ✅ 全树静态检查（20 个 `.cpp`）零告警；完整构建零告警（`[100%] Built target qshot`）；冒烟存活 6 秒无崩溃。
 - ✅ **全量回归一键跑通**：`bash build-review/build_probes.sh --run` → 13 个目标全部构建成功（**零告警**）、全部 `exit=0`，合计 **363 条断言 0 失败**。
+  - （这条记录保留为 M4 当时的结果。该脚本已于 2026-09-24 被 `ctest` 取代 —— 见 7 节的「探针的构建与运行」；当时的 13 个目标现在都在 CTest 里。）
   - `probe_selection_geometry` 93/0、`probe_pin_geometry` 28/0、`probe_pin_wiring` 13/0、`probe_multiscreen_coords` 20/0、`probe_noactivate` 9/0、`render_pin` 51/0、`render_pin_hover` 40/0、`probe_magnifier_render` 5 用例全 `differing=0 maxDelta=0`。
   - `probe_history_store` **81/0**：13 节，覆盖空库、add 落盘、另存文件是拷贝而非引用、条数超限**连文件一起删**、字节预算驱逐但**永不驱逐最新一条**、索引往返（缩略图**逐像素一致**）、失效条目丢弃、孤儿清扫、**索引损坏时截图仍在**、禁用态不写任何文件、缩略图长边 160 且保比、`removeAt`/`clear`、`changed()` 发出时磁盘已一致。
   - `probe_history_menu` **28/0**：7 节，含第 [6] 节的 id-vs-行号回归。
@@ -727,11 +728,15 @@ Phase 0.2 拆 SnapOverlay ──┐  ✅ M0
 - **测量「控件请求了多大的重绘区域」只能从 paint 事件里读，而 paint 事件只在控件可见时才会来。** `QWidget::update()` 对不可见控件是空操作，所以探针必须 `show()` —— 对全屏 overlay 就先把平台强制成 `offscreen`。而 `QRegion()` 空区域对 `render()` 意味着「整个控件」，所以「一个 paint 事件都没收到」会让所有比对**免费通过**：每一步都要断言区域非空。见 `probe_partial_repaint.cpp` 的 `drain()`。
   - 推论：控件自己的定时器会在测量窗口内改状态。overlay 有一个 30ms 的 hover 定时器，它一次 `update()` 会把「当前鼠标底下那个真实窗口」的轮廓画出来，于是 dim 遮罩变了半个屏幕 —— 表现和脏区算错一模一样。**先让定时器响完再测，或者把它挪到最后一步。**
 
-**探针的构建与运行已经脚本化**：`bash build-review/build_probes.sh [--run] [名字...]`（无名字 = 全建全跑）。**23 个目标**的源文件组合与 moc 依赖写在脚本里的注册表中，**moc 按类名 glob 定位、绝不写 hash 目录**（CMake 一重跑，hash 就变，手写的链接行必然指向不存在的路径）。这一条是被两类反复发生的错误逼出来的：漏一个 moc 文件、以及路径指向已消失的 hash 目录。
+**探针的构建与运行已并入 CMake / CTest**（2026-09-24）：`ctest --test-dir <构建目录>`。应用的源文件收进一个静态库 `qshot_core`，**清单只写一次**；探针各自 `add_executable` + `add_test`，moc 交给 AUTOMOC。**19 个测试 / 627 条断言**。
 
-- ⚠️ **运行探针前必须把 Qt 与 MinGW 的 `bin` 加进 `PATH`**，否则 exe 在 loader 阶段就失败，而 Git Bash 把它报成**没有任何输出的 `exit=127`** —— 看起来完全像「二进制不存在」。`--run` 已经代劳。
-- ⚠️ **脚本执行期间不要编辑脚本**：bash 是按字节偏移边读边执行的，改动会让它从错位的位置继续解析，报出与真实内容无关的语法错（曾误判成 `echo "...(s)"` 有问题）。
-- 平台层必须**整组链接**：`PlatformFactory.cpp` 点名了全部四个 Windows 实现，而每个实现的 vtable 在自己的 TU 里发出，只链调用到的那一个仍会缺符号。库也是：`-ldwmapi -lgdi32 -luser32` 跟着平台组一起给。
+这一步是被三类反复发生的错误逼出来的，而前两类在旧的手写构建脚本里只是被**管理**、没有被消除：漏一个 moc 文件；路径指向已消失的 hash 目录（CMake 一重跑 hash 就变，脚本只好按类名 glob 绕开，那是症状不是解法）；以及同一个 `.cpp` 被二十多条手写链接行各自重编一遍。静态库把前两类变成「没有链接行可以写错」，顺带把全量构建从约 8 分钟压到约 1 分钟。
+
+- ⚠️ **每个测试都要求输出里出现 `N checks, 0 failures`**（`PASS_REGULAR_EXPRESSION`）。汇总行是探针返回前打印的最后一行，所以匹配到它就等于「跑到了末尾且零失败」—— 比退出码**更强**。起因是一个真实缺陷：`probe_quiet_save` 的 29 条断言**一条都没打印出来**（stdout 被重定向到管道时是全缓冲的，而该进程退出时没有冲刷它），它以 `exit=0` 结束，旧脚本因为只对输出做正则求和而把它整段跳过 —— 于是报出的总数少了 29 条（598 而非 627）并且显示全绿。修法是探针返回前显式 `fflush(stdout)`；防护是这条正则。
+- ⚠️ **`PASS_REGULAR_EXPRESSION` 不能加 `^...$` 锚点**：CTest 对**整段**捕获输出做一次匹配，不是逐行，所以锚点只有在探针「除了这一行什么都没打印」时才成立 —— 会误杀每一个会打印检查行的探针。实测：带锚点时 19 个测试全红，去掉后全绿。
+- ⚠️ **Qt 与 MinGW 的 `bin` 由 CMake 注入测试环境**（`ENVIRONMENT_MODIFICATION`），所以 `ctest` 不再需要先 export PATH。那条「loader 失败被报成**没有任何输出的 `exit=127`**、看起来完全像二进制不存在」的坑因此从根上消失。
+- ⚠️ **`set_tests_properties` 的属性是 `属性 值` 成对的**：把列表型属性（如 `ENVIRONMENT_MODIFICATION`）的两个元素写成两个独立参数，最后一个值就成了「没有属性名的孤儿」，报的是毫无帮助的 `incorrect number of arguments`。列表要先放进变量再整体传。
+- 平台层必须**整组链接**：`PlatformFactory.cpp` 点名了全部**五个** Windows 实现，而每个实现的 vtable 在自己的 TU 里发出，只链调用到的那一个仍会缺符号。库也是：`-ldwmapi -lgdi32 -luser32` 跟着平台组一起给（现在是 `qshot_core` 的 `PUBLIC` 链接，探针自动继承）。
 
 **部署包有两层验证，缺一不可**（见 3.2）：
 

@@ -29,19 +29,30 @@ bash tools/smoke_deploy.sh        # 在打包目录里实际启动一次，验�
 
 | 命令 | 用途 |
 | --- | --- |
-| `bash build-review/build_probes.sh [--run] [名字...]` | 构建（并运行）全部验证探针与离屏渲染脚手架，无名字 = 全建全跑；结束时汇总断言总数 |
+| `ctest --test-dir build/Desktop_Qt_6_11_2_MinGW_64_bit_Debug --output-on-failure` | 运行全部验证探针：**19 个测试 / 627 条断言**。每个都必须打印出 `N checks, 0 failures` 才算通过 |
+| `cmake --build <构建目录> --target render_evidence` | 重新生成 `build-review/` 里的目视证据 PNG（8 个渲染脚手架） |
+| `cmake --build <构建目录> --target archaeology` | 构建 20 个历史一次性探针（默认不构建；它们是实测结论的证据，需要时可重跑） |
 | `bash tools/smoke_single_instance.sh [exe]` | 启动两份 qshot.exe，验证第二份拒绝启动、第一份退出后名字被交还；不带参数测 Debug 版，传 `dist/QShot/qshot.exe` 测发布版 |
 | `bash tools/make_icon.sh` | 重新生成 `resources/qshot.ico`（8 个尺寸）与放大拼版预览 |
 | `python tools/verify_review_status.py` | 校验审查问题状态索引与三份审查报告一致；`--selftest` 证明每条检查都能变红 |
 | `python tools/verify_icon.py` | 不依赖 Qt，解析并校验 ICO 容器结构 |
 | `python tools/verify_iss.py` | 安装包脚本的静态检查（BOM、宏、GUID、任务引用、路径是否存在） |
 
-探针的二进制放在临时目录，`build-review/` 只留源码与证据（PNG）。全量构建约 4 分钟，
-**必须后台跑**，前台会被超时信号打断。完整输出（含被 `tail` 截掉的前半段）写在临时目录的
-`probe_log.txt` 里。
+探针由 CMake 构建，源码与证据都在 `build-review/`：`.cpp` 入库，渲染产出的 PNG 忽略。
+测试以 `build-review/` 为工作目录运行（渲染脚手架要互相读 PNG），所以证据就写在源码旁边。
+`ctest` 自己把 Qt 与 MinGW 的 `bin` 注入测试环境，**不需要先 export PATH**。
 
-`probe_deploy` 不在这条命令里跑：它必须**在打包目录内**执行才能测到真实的插件解析，
+**为什么要求打印汇总行而不是只看退出码**：汇总行是探针返回前打印的最后一行，所以匹配到它
+就证明它跑到了 `main` 的末尾且零失败 —— 比退出码**更强**。反过来说，一个输出从没到达管道的
+探针会以 `exit=0` 结束，只看退出码就会把它算成通过。这不是假设：`probe_quiet_save` 的 29 条
+断言曾长期一条都不打印，而旧的构建脚本因为只对输出做正则求和，把它整段静默跳过，报出的总数
+因此少了 29 条（598 而非 627）且全绿。
+
+`probe_deploy` 不在 CTest 里：它必须**在打包目录内**执行才能测到真实的插件解析，
 由 `bash tools/smoke_deploy.sh` 负责（它会把探针拷进去、跑完删掉）。
+
+`probe_settings_autostart` 带 `side-effects` 标签：它会读写真实的 HKCU Run 键（先存后恢复）。
+不想让测试碰注册表就用 `ctest -LE side-effects`。
 
 `probe_partial_repaint` 是唯一一个自己把平台设成 `offscreen` 的探针，与「离屏渲染不要用 offscreen 平台」
 （本机该平台字体库退化，一个字都不渲染）**不矛盾**：它 `show()` 是为了让 `update()` 真的触发 paint 事件
