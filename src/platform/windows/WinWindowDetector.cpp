@@ -23,14 +23,19 @@ static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
     GetWindowThreadProcessId(hwnd, &pid);
     if (pid == data->currentPid) return TRUE;
 
-    char className[256];
-    GetClassNameA(hwnd, className, sizeof(className));
-    QString clsName = QString::fromLocal8Bit(className);
+    // The W variants, not the A ones: the A calls decode with the *system* code page, so a class
+    // name containing anything outside it comes back as mojibake and silently stops matching.
+    // Likewise GetWindowLongPtr rather than GetWindowLong -- the latter is the 32-bit form and
+    // truncates a LONG_PTR on 64-bit. GWL_EXSTYLE happens to fit today, but this is the variant
+    // that cannot quietly lose bits.
+    wchar_t className[256];
+    GetClassNameW(hwnd, className, 256);
+    QString clsName = QString::fromWCharArray(className);
     if (clsName == "Progman" || clsName == "WorkerW" || clsName == "Shell_TrayWnd") {
         return TRUE;
     }
 
-    LONG exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
+    LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
     if (exStyle & WS_EX_TOOLWINDOW) {
         if (GetWindowTextLength(hwnd) == 0) return TRUE;
     }
@@ -56,9 +61,8 @@ QRect WinWindowDetector::windowRectAt(const QPoint& logicalPos) const {
         QString name;
         MONITORINFOEXW mi;
         bool found;
-    } edata;
+    } edata{}; // value-initialised: `mi` is left untouched unless a monitor actually matches
     edata.name = targetScreen->name();
-    edata.found = false;
     edata.mi.cbSize = sizeof(MONITORINFOEXW);
     
     EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR hMon, HDC, LPRECT, LPARAM lParam) -> BOOL {
@@ -75,14 +79,25 @@ QRect WinWindowDetector::windowRectAt(const QPoint& logicalPos) const {
         return TRUE;
     }, reinterpret_cast<LPARAM>(&edata));
     
-    POINT pt;
-    if (edata.found) {
-        qreal dpr = targetScreen->devicePixelRatio();
-        pt.x = edata.mi.rcMonitor.left + qRound((logicalPos.x() - targetScreen->geometry().x()) * dpr);
-        pt.y = edata.mi.rcMonitor.top + qRound((logicalPos.y() - targetScreen->geometry().y()) * dpr);
-    } else {
-        GetCursorPos(&pt); // fallback
+    if (!edata.found) {
+        // No HMONITOR matched this screen's name, so there is no rcMonitor to map against -- and
+        // the mapping genuinely needs one, because EnumWindowsProc below compares against
+        // *physical* desktop coordinates (DwmGetWindowAttribute and GetWindowRect both are).
+        // Multiplying by the device pixel ratio instead would only be correct for a screen whose
+        // physical origin is (0,0), i.e. the primary one; on any other screen it lands somewhere
+        // else entirely and would highlight a window the user is not pointing at. An empty
+        // rectangle is already this interface's documented answer for "no window found" (see
+        // IWindowDetector.h) and the caller turns that into "no hover outline", so degrading to
+        // it is strictly better than answering wrongly.
+        // This used to call GetCursorPos(), which ignored the argument it was handed -- the
+        // P1-2 defect. It was never a correct answer, only an often-close-enough one.
+        return QRect();
     }
+
+    POINT pt{};
+    const qreal inputDpr = targetScreen->devicePixelRatio();
+    pt.x = edata.mi.rcMonitor.left + qRound((logicalPos.x() - targetScreen->geometry().x()) * inputDpr);
+    pt.y = edata.mi.rcMonitor.top + qRound((logicalPos.y() - targetScreen->geometry().y()) * inputDpr);
 
     WindowSearchData data;
     data.pt = pt;
