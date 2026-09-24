@@ -60,7 +60,7 @@
 | P2-2 | Idle 状态每次鼠标移动都全屏重绘 | P2 | 已修 | src/overlay/SnapOverlay.cpp | 探针 `probe_partial_repaint`：脏区 264×204 = 8.55% |
 | P2-3 | 同一份全屏数据存了两份 | P2 | 已修 | src/overlay/SnapOverlay.h | **本次复核**：`backgroundPixmap_` 已不存在，只剩 `backgroundImage_` |
 | P2-4 | 每次拖动/缩放结束都重新裁切三张大图 | P2 | 已修 | src/annotation/AnnotationLayer.cpp | 马赛克图层改懒分配；M7 补 `mosaicInkPresent_` 把关（原先清空后仍每帧 blit 全透明图） |
-| P3 | 仓库残留 / 编译开关 / 测试 / 文档 | P3 | **部分已修** | CMakeLists.txt | **本次复核**：① 残留文件已清（`main.cpp`/`Main.qml`/`build_output.txt`/`err.txt`/`out.txt` 均不存在）；② `docs/ARCHITECTURE.md` 与 `docs/TASKS.md` 已不存在（描述失配的问题随之作废）；③ `.workbuddy-ai/` 已纳入版本控制；④ **`-Wall -Wextra -Wshadow` 已开**（`target_compile_options`，全量重建 24 个 TU、**零警告**）。**仍无测试、无 CI** |
+| P3 | 仓库残留 / 编译开关 / 测试 / 文档 | P3 | **部分已修** | CMakeLists.txt | **本次复核**：① 残留文件已清（`main.cpp`/`Main.qml`/`build_output.txt`/`err.txt`/`out.txt` 均不存在）；② `docs/ARCHITECTURE.md` 与 `docs/TASKS.md` 已不存在（描述失配的问题随之作废）；③ `.workbuddy-ai/` 已纳入版本控制；④ **`-Wall -Wextra -Wshadow` 已开**（`target_compile_options`，全量重建 24 个 TU、**零警告**）。**2026-09-24 更新：测试已不再是空白** —— 探针并入 CMake/CTest，现 **19 个 CTest 测试 / 627 条断言**（约 11 秒），并用 `PASS_REGULAR_EXPRESSION` 强制每个测试打印 `N checks, 0 failures`（比只看退出码更强，曾靠它抓到 `probe_quiet_save` 29 条断言一条都不打印却 `exit=0`）。**剩余部分只有「无 CI」** —— 无 `.github/workflows`、无任何 CI 配置 |
 
 ### 第二轮 —— `CODE_REVIEW_ROUND2.md`
 
@@ -108,8 +108,9 @@
 
 1. **P1-2** —— `WinWindowDetector::windowRectAt()` 在 `edata.found == false` 时回落 `GetCursorPos()`，该路径下入参被忽略。
    只在「按屏幕名枚举不到显示器」时触发，正常路径不会走到。要修的话，正确做法是把入参直接按 DPR 换算后使用（或返回空矩形让调用方放弃），而不是去找光标。
-2. **P3** —— 只剩「无测试、无 CI」。`-Wall -Wextra -Wshadow` 已在 2026-09-23 打开
-   （审查报告自己写着「开启后这类问题下次会自己暴露」，所以它和「不再重复劳动」是同一件事）。
+2. **P3** —— 只剩「无 CI」。`-Wall -Wextra -Wshadow` 已于 2026-09-23 打开；**测试已于 2026-09-24 落地**
+   （探针并入 CMake/CTest → 19 个测试 / 627 条断言，跑一次约 11 秒）。仍没有任何 CI 配置，所以
+   「每次改动都自动跑一遍」还得靠人记得跑 `ctest`。
 3. **N-9** —— ① `EnumData` 未整体清零；② 仍用 `GetClassNameA`/`GetWindowLong`（非 Unicode / 非 Ptr 变体）；③ `IScreenCapture.h` 仍 include `<QScreen>`（前向声明即可）。
    三条都是低危卫生问题，没有已知的功能影响。
 
